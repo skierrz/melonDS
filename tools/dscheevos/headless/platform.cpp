@@ -15,6 +15,8 @@
 #include "SPI_Firmware.h"
 
 void hl_log(melonDS::Platform::LogLevel level, const char* msg);
+int hl_net_send(melonDS::u8* data, int len);
+int hl_net_recv(melonDS::u8* data);
 
 namespace melonDS::Platform
 {
@@ -142,8 +144,8 @@ int MP_SendReply(u8*, int len, u64, u16, void*) { return len; }
 int MP_SendAck(u8*, int len, u64, void*) { return len; }
 int MP_RecvHostPacket(u8*, u64*, void*) { return 0; }
 u16 MP_RecvReplies(u8*, u64, u16, void*) { return 0; }
-int Net_SendPacket(u8*, int len, void*) { return len; }
-int Net_RecvPacket(u8*, void*) { return 0; }
+int Net_SendPacket(u8* data, int len, void*) { return hl_net_send(data, len); }
+int Net_RecvPacket(u8* data, void*) { return hl_net_recv(data); }
 
 // ---- peripherals ----
 void Camera_Start(int, void*) {}

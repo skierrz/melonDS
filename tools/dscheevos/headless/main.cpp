@@ -25,6 +25,8 @@
 #include "DSi_NAND.h"
 #include "FATStorage.h"
 #include "Platform.h"
+#include "Net.h"
+#include "Net_Slirp.h"
 
 using namespace melonDS;
 namespace fs = std::filesystem;
@@ -38,6 +40,13 @@ bool hit_until = false;
 std::string linebuf;         // nocash prints may arrive in pieces
 bool stopped = false;
 }
+
+// Wi-Fi: frames from the emulated Wi-Fi chip go through a user-mode network
+// stack (libslirp). The guest gets DHCP on 10.64.0.0/24; 10.64.0.1 reaches
+// the host, so a mock server on the host is at that address.
+static melonDS::Net* g_net = nullptr;
+int hl_net_send(melonDS::u8* data, int len) { return g_net ? g_net->SendPacket(data, len, 0) : len; }
+int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) : 0; }
 
 // Called by Platform::Log for every message.
 void hl_log(Platform::LogLevel level, const char* msg)
@@ -118,6 +127,7 @@ static void usage()
         "  --screenshot FILE    write both screens as PPM at the end\n"
         "  --keys MASK          held keys bitmask, active-low style handled for you (bit0=A ... bit9=L)\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
+        "  --net                connect Wi-Fi to a user-mode network (host reachable at 10.64.0.1)\n"
         "  --cache-model        time ARM9 cache hits/misses instead of melonDS's flat cache cost\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
@@ -126,7 +136,7 @@ static void usage()
 int main(int argc, char** argv)
 {
     std::string rom, mode = "ds", biosdir, nandpath, sddir, shot;
-    long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false;
+    long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     for (int i = 1; i < argc; i++)
     {
         std::string a = argv[i];
@@ -143,6 +153,7 @@ int main(int argc, char** argv)
         else if (a == "--firmware-boot") direct = false;
         else if (a == "--verbose") hl::verbose = true;
         else if (a == "--cache-model") cachemodel = true;
+        else if (a == "--net") net = true;
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -161,6 +172,16 @@ int main(int argc, char** argv)
         if (!fh) { std::fprintf(stderr, "cannot open %s\n", fw.c_str()); return 2; }
         ndsargs.Firmware = Firmware(fh);
         Platform::CloseFile(fh);
+        if (net)
+        {
+            // Point the saved Wi-Fi settings at melonDS's emulated access point
+            // (in memory only; the dump on disk is untouched).
+            auto& aps = ndsargs.Firmware.GetAccessPoints();
+            aps[0] = Firmware::WifiAccessPoint(dsi ? 1 : 0);
+            aps[1] = Firmware::WifiAccessPoint();
+            aps[2] = Firmware::WifiAccessPoint();
+            for (auto& ap : ndsargs.Firmware.GetExtendedAccessPoints()) ap = Firmware::ExtendedWifiAccessPoint();
+        }
     }
     else
         ndsargs.Firmware = Firmware(0);
@@ -202,6 +223,14 @@ int main(int argc, char** argv)
     if (direct || nds->NeedsDirectBoot())
         nds->SetupDirectBoot(fs::path(rom).filename().string());
     nds->ARM9.CacheModel = cachemodel;
+
+    melonDS::Net netstack;
+    if (net)
+    {
+        netstack.RegisterInstance(0);
+        netstack.SetDriver(std::make_unique<Net_Slirp>([&](const u8* d, int len) { netstack.RXEnqueue(d, len); }));
+        g_net = &netstack;
+    }
     nds->Start();
 
     // melonDS key mask: bit set = released
@@ -220,6 +249,7 @@ int main(int argc, char** argv)
             (unsigned long long)c.IHit, (unsigned long long)c.IMiss, (unsigned long long)c.DReadHit, (unsigned long long)c.DReadMiss,
             (unsigned long long)c.DWriteHit, (unsigned long long)c.DWriteMiss, (unsigned long long)c.DWriteBack);
     }
+    g_net = nullptr;
     std::fprintf(stderr, "[runner] %ld frames, %s\n", f,
                  hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : "frame limit");
     return hl::hit_until || hl::until.empty() ? 0 : 1;

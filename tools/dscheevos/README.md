@@ -13,6 +13,8 @@ build/melonds-headless --rom test.nds --until DONE
 build/melonds-headless --rom test.nds --mode dsi --bios-dir DIR --nand nand-copy.bin --until DONE
 ```
 
+With `--net`, the emulated Wi-Fi joins melonDS's built-in access point and reaches the network through a user-mode stack (libslirp, bundled with melonDS). The console gets an address by DHCP, and the host machine is reachable at `10.64.0.1`, so a test server running on the host is easy to reach. When a real firmware dump is used, the runner points its saved Wi-Fi settings at that access point in memory; the file isn't changed. Needs libenet installed.
+
 DS mode works without any console files (melonDS's free BIOS). DSi mode needs your own BIOS, firmware and NAND dumps in `--bios-dir`: `biosnds7.bin`, `biosnds9.bin`, `dsfirmware.bin`, `biosdsi7.bin`, `biosdsi9.bin`, `dsifirmware.bin`. Pass a copy of the NAND, since melonDS writes to it. Run with no arguments for all options.
 
 ## Cache timing model (`--cache-model`)
