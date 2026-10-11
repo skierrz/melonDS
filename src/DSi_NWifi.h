@@ -44,6 +44,22 @@ public:
 
     void MSTimer(u32 param);
 
+    // Test hooks for the emulated access point: it drops us (deauthentication),
+    // switches to WPA2-PSK (CCMP) with this PMK, starts a group key rekey.
+    void DropConnection();
+    void EnableWPA2(const u8* pmk);
+    void StartGroupRekey();
+    struct WPAStats
+    {
+        u32 Handshakes;     // 4-way handshakes completed
+        u32 GroupRekeys;    // group rekeys answered
+        u32 PairwiseKeysOK; // WMI_ADD_CIPHER_KEY with the PTK's TK
+        u32 GroupKeysOK;    // WMI_ADD_CIPHER_KEY with the current GTK and index
+        u32 KeyMismatches;  // keys the host loaded that aren't ours
+        u32 BadFrames;      // EAPOL with a bad MIC, or out of turn
+        u32 Timeouts;       // handshakes the host didn't finish (we drop it)
+    } WpaStats {};
+
 private:
     melonDS::DSi& DSi;
     u32 TransferCmd;
@@ -147,6 +163,17 @@ private:
     u32 ConnectionStatus;
 
     u8 LANBuffer[2048];
+
+    void WPA_Send(u16 info, const u8* nonce, const u8* keydata, u32 kdlen);
+    void WPA_Receive(const u8* frame, u32 len);
+    void WPA_AddKey();
+    bool WpaEnabled = false;
+    bool WpaPortOpen = false;   // a 4-way handshake finished on this association
+    int WpaState = 0;           // 0 idle, 1 sent message 1, 2 sent message 3, 3 keyed, 4 sent group message 1
+    u32 WpaTimer = 0;
+    u64 WpaReplay = 0;
+    u8 WpaPMK[32], WpaANonce[32], WpaKCK[16], WpaKEK[16], WpaTK[16], WpaGTK[16];
+    u8 WpaGTKIdx = 1;
 
     bool SendBSSInfo;
 };

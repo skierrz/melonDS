@@ -98,6 +98,8 @@ public:
     void CheckTX();
     bool TXReq;
 
+    DSi_SDDevice* Port(int n) { return Ports[n].get(); }
+
     void SetCardIRQ();
 
     [[nodiscard]] FATStorage* GetSDCard() noexcept;

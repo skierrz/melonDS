@@ -23,6 +23,8 @@
 #include "SPI.h"
 #include "WifiAP.h"
 #include "Platform.h"
+#include "sha1/sha1.hpp"
+#include "tiny-AES-c/aes.hpp"
 
 namespace melonDS
 {
@@ -976,6 +978,8 @@ void DSi_NWifi::WMI_Command()
 
                 Log(LogLevel::Debug, "WMI: disconnect\n");
                 ConnectionStatus = 0;
+                WpaState = 0;
+                WpaPortOpen = false;
 
                 u8 reply[11];
                 *(u16*)&reply[0] = 3; // checkme
@@ -1149,6 +1153,10 @@ void DSi_NWifi::WMI_Command()
             }
             break;
 
+        case 0x0016: // add cipher key
+            WPA_AddKey();
+            break;
+
         case 0x0041: // 'WMI_SET_WSC_STATUS_CMD'
             {
                 Mailbox[0].Read();
@@ -1204,6 +1212,236 @@ void DSi_NWifi::WMI_Command()
     MB_Drain(0);
 }
 
+// ---- WPA2-PSK for the emulated access point (test tooling) ----
+
+static void HMAC_SHA1(const u8* key, u32 keylen, const u8* const* parts, const u32* lens, int nparts, u8 out[20])
+{
+    u8 k[64] = {0}, pad[64], inner[20];
+    memcpy(k, key, keylen); // keys here are at most 32 bytes
+    SHA1_CTX ctx;
+    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x36;
+    SHA1Init(&ctx);
+    SHA1Update(&ctx, pad, 64);
+    for (int i = 0; i < nparts; i++) SHA1Update(&ctx, parts[i], lens[i]);
+    SHA1Final(inner, &ctx);
+    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x5C;
+    SHA1Init(&ctx);
+    SHA1Update(&ctx, pad, 64);
+    SHA1Update(&ctx, inner, 20);
+    SHA1Final(out, &ctx);
+}
+
+static void EAPOL_MIC(const u8 kck[16], const u8* frame, u32 len, u8 mic[16])
+{
+    u8 copy[512], d[20];
+    memcpy(copy, frame, len);
+    memset(copy + 81, 0, 16);
+    const u8* parts[1] = {copy};
+    u32 lens[1] = {len};
+    HMAC_SHA1(kck, 16, parts, lens, 1, d);
+    memcpy(mic, d, 16);
+}
+
+// RFC 3394 AES key wrap; n 64-bit blocks in, n+1 out
+static void AES_KeyWrap(const u8 kek[16], const u8* in, u32 n, u8* out)
+{
+    AES_ctx ctx;
+    AES_init_ctx(&ctx, kek);
+    u8 a[8], b[16];
+    memset(a, 0xA6, 8);
+    memcpy(out + 8, in, n * 8);
+    for (u32 j = 0; j < 6; j++)
+    {
+        for (u32 i = 1; i <= n; i++)
+        {
+            memcpy(b, a, 8);
+            memcpy(b + 8, out + i * 8, 8);
+            AES_ECB_encrypt(&ctx, b);
+            u64 t = (u64)n * j + i;
+            for (int k = 0; k < 8; k++) a[k] = b[k] ^ (u8)(t >> (56 - 8 * k));
+            memcpy(out + i * 8, b + 8, 8);
+        }
+    }
+    memcpy(out, a, 8);
+}
+
+void DSi_NWifi::EnableWPA2(const u8* pmk)
+{
+    memcpy(WpaPMK, pmk, 32);
+    WpaEnabled = true;
+    for (int i = 0; i < 16; i++) WpaGTK[i] = (u8)(0x40 + i * 3);
+}
+
+void DSi_NWifi::WPA_Send(u16 info, const u8* nonce, const u8* keydata, u32 kdlen)
+{
+    u8 f[256] = {0};
+    u32 wrapped = 0;
+    f[0] = 2; f[1] = 3; f[4] = 2;
+    f[5] = info >> 8; f[6] = info & 0xFF;
+    f[8] = 16;
+    WpaReplay++;
+    for (int i = 0; i < 8; i++) f[9 + i] = (u8)(WpaReplay >> (56 - 8 * i));
+    if (nonce) memcpy(f + 17, nonce, 32);
+    if (keydata)
+    {
+        AES_KeyWrap(WpaKEK, keydata, kdlen / 8, f + 99);
+        wrapped = kdlen + 8;
+    }
+    f[97] = wrapped >> 8; f[98] = wrapped & 0xFF;
+    f[2] = (95 + wrapped) >> 8; f[3] = (95 + wrapped) & 0xFF;
+    if (info & 0x0100) EAPOL_MIC(WpaKCK, f, 99 + wrapped, f + 81);
+    u32 len = 99 + wrapped;
+
+    // as CheckRX hands the host a data frame: AP -> us
+    Mailbox[8].Write(2);
+    Mailbox[8].Write(0x00);
+    MB_Write16(8, 16 + 8 + len);
+    Mailbox[8].Write(0);
+    Mailbox[8].Write(0);
+    MB_Write16(8, 0x80);
+    for (int i = 0; i < 6; i++) Mailbox[8].Write(EEPROM[0x00A + i]);
+    for (int i = 0; i < 6; i++) Mailbox[8].Write(WifiAP::APMac[i]);
+    MB_Write16(8, (u16)(((len + 8) >> 8) | (((len + 8) & 0xFF) << 8)));
+    MB_Write16(8, 0xAAAA);
+    MB_Write16(8, 0x0003);
+    MB_Write16(8, 0x0000);
+    MB_Write16(8, 0x8E88);
+    for (u32 i = 0; i < len; i++) Mailbox[8].Write(f[i]);
+    DrainRXBuffer();
+    WpaTimer = 0;
+}
+
+static u32 GTK_KeyData(u8* kd, const u8 gtk[16], u8 idx, bool with_ie)
+{
+    static const u8 rsn[] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F,
+                             0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02, 0x00, 0x00};
+    u32 n = 0;
+    if (with_ie) { memcpy(kd, rsn, sizeof(rsn)); n = sizeof(rsn); }
+    kd[n++] = 0xDD; kd[n++] = 22; kd[n++] = 0x00; kd[n++] = 0x0F; kd[n++] = 0xAC; kd[n++] = 0x01;
+    kd[n++] = idx; kd[n++] = 0;
+    memcpy(kd + n, gtk, 16);
+    n += 16;
+    if (n % 8) { kd[n++] = 0xDD; while (n % 8) kd[n++] = 0; }
+    return n;
+}
+
+void DSi_NWifi::StartGroupRekey()
+{
+    if (!WpaEnabled || ConnectionStatus != 1 || WpaState != 3)
+        return;
+    for (int i = 0; i < 16; i++) WpaGTK[i] = (u8)(WpaGTK[i] * 5 + 7 + i);
+    WpaGTKIdx = WpaGTKIdx == 1 ? 2 : 1;
+    u8 kd[64];
+    u32 n = GTK_KeyData(kd, WpaGTK, WpaGTKIdx, false);
+    Log(LogLevel::Debug, "WPA: group rekey to key %d\n", WpaGTKIdx);
+    WpaState = 4;
+    WPA_Send(0x1382, nullptr, kd, n);
+}
+
+void DSi_NWifi::WPA_Receive(const u8* f, u32 len)
+{
+    if (len < 99 || f[1] != 3 || f[4] != 2) { WpaStats.BadFrames++; return; }
+    u32 flen = 4 + ((f[2] << 8) | f[3]);
+    u16 info = (f[5] << 8) | f[6];
+    if (flen > len) { WpaStats.BadFrames++; return; }
+    u64 replay = 0;
+    for (int i = 0; i < 8; i++) replay = (replay << 8) | f[9 + i];
+
+    if (WpaState == 1 && (info & 0x0108) == 0x0108 && !(info & 0x0200))
+    {
+        // message 2: derive the PTK from its SNonce, check its MIC
+        u8 data[76], ptk[60];
+        bool apLow = memcmp(WifiAP::APMac, &EEPROM[0x00A], 6) < 0;
+        bool anLow = memcmp(WpaANonce, f + 17, 32) < 0;
+        memcpy(data, apLow ? WifiAP::APMac : &EEPROM[0x00A], 6);
+        memcpy(data + 6, apLow ? &EEPROM[0x00A] : WifiAP::APMac, 6);
+        memcpy(data + 12, anLow ? WpaANonce : f + 17, 32);
+        memcpy(data + 44, anLow ? f + 17 : WpaANonce, 32);
+        static const char label[] = "Pairwise key expansion";
+        for (u8 i = 0; i < 3; i++)
+        {
+            const u8* parts[3] = {(const u8*)label, data, &i};
+            u32 lens[3] = {sizeof(label), 76, 1}; // label with its NUL
+            HMAC_SHA1(WpaPMK, 32, parts, lens, 3, ptk + i * 20);
+        }
+        memcpy(WpaKCK, ptk, 16);
+        memcpy(WpaKEK, ptk + 16, 16);
+        memcpy(WpaTK, ptk + 32, 16);
+        u8 mic[16];
+        EAPOL_MIC(WpaKCK, f, flen, mic);
+        if (memcmp(mic, f + 81, 16) || replay != WpaReplay)
+        {
+            Log(LogLevel::Warn, "WPA: message 2 rejected (MIC or replay counter)\n");
+            WpaStats.BadFrames++;
+            return;
+        }
+        u8 kd[64];
+        u32 n = GTK_KeyData(kd, WpaGTK, WpaGTKIdx, true);
+        WpaState = 2;
+        WPA_Send(0x13CA, WpaANonce, kd, n);
+        return;
+    }
+    if (WpaState == 2 && (info & 0x0308) == 0x0308)
+    {
+        u8 mic[16];
+        EAPOL_MIC(WpaKCK, f, flen, mic);
+        if (memcmp(mic, f + 81, 16) || replay != WpaReplay) { WpaStats.BadFrames++; return; }
+        Log(LogLevel::Debug, "WPA: 4-way handshake done\n");
+        WpaState = 3;
+        WpaPortOpen = true;
+        WpaStats.Handshakes++;
+        return;
+    }
+    if (WpaState == 4 && (info & 0x0308) == 0x0300)
+    {
+        u8 mic[16];
+        EAPOL_MIC(WpaKCK, f, flen, mic);
+        if (memcmp(mic, f + 81, 16) || replay != WpaReplay) { WpaStats.BadFrames++; return; }
+        Log(LogLevel::Debug, "WPA: group rekey answered\n");
+        WpaState = 3;
+        WpaStats.GroupRekeys++;
+        return;
+    }
+    Log(LogLevel::Warn, "WPA: EAPOL frame out of turn (key info %04X, state %d)\n", info, WpaState);
+    WpaStats.BadFrames++;
+}
+
+void DSi_NWifi::WPA_AddKey()
+{
+    u8 p[45];
+    for (int i = 0; i < 45; i++) p[i] = Mailbox[0].Read();
+    if (!WpaEnabled) return;
+    u8 idx = p[0], usage = p[2], keylen = p[3];
+    const u8* key = p + 12;
+    if (usage == 0 && keylen == 16 && idx == 0 && !memcmp(key, WpaTK, 16))
+        WpaStats.PairwiseKeysOK++;
+    else if (usage == 1 && keylen == 16 && idx == WpaGTKIdx && !memcmp(key, WpaGTK, 16))
+        WpaStats.GroupKeysOK++;
+    else
+    {
+        Log(LogLevel::Warn, "WPA: host loaded a key that isn't ours (index %d usage %d length %d)\n", idx, usage, keylen);
+        WpaStats.KeyMismatches++;
+    }
+}
+
+void DSi_NWifi::DropConnection()
+{
+    if (ConnectionStatus != 1)
+        return;
+    Log(LogLevel::Debug, "WMI: access point dropped us (test)\n");
+    ConnectionStatus = 0;
+    WpaState = 0;
+    WpaPortOpen = false;
+
+    u8 reply[11];
+    *(u16*)&reply[0] = 3;
+    memcpy(&reply[2], WifiAP::APMac, 6);
+    reply[8] = 1; // disconnect reason: unspecified (deauthenticated by the AP)
+    reply[9] = 0;
+    reply[10] = 0;
+    SendWMIEvent(1, 0x1003, reply, 11);
+}
+
 void DSi_NWifi::WMI_ConnectToNetwork()
 {
     u8 type = Mailbox[0].Read();
@@ -1229,11 +1467,10 @@ void DSi_NWifi::WMI_ConnectToNetwork()
 
     u32 flags = MB_Read32(0);
 
+    bool wpa2 = WpaEnabled && auth == 0x05 && pCryptoType == 0x04 && gCryptoType == 0x04;
     if ((type != 0x01) ||
         (auth11 != 0x01) ||
-        (auth != 0x01) ||
-        (pCryptoType != 0x01) ||
-        (gCryptoType != 0x01) ||
+        (!wpa2 && (auth != 0x01 || pCryptoType != 0x01 || gCryptoType != 0x01 || WpaEnabled)) ||
         (memcmp(bssid, WifiAP::APMac, 6)))
     {
         Log(LogLevel::Error, "WMI_Connect: bad parameters\n");
@@ -1260,6 +1497,14 @@ void DSi_NWifi::WMI_ConnectToNetwork()
     SendWMIEvent(1, 0x1002, reply, 20);
 
     ConnectionStatus = 1;
+    WpaPortOpen = false;
+    WpaState = 0;
+    if (wpa2)
+    {
+        for (int i = 0; i < 32; i++) WpaANonce[i] = (u8)(BeaconTimer * 31 + i * 7);
+        WpaState = 1;
+        WPA_Send(0x008A, WpaANonce, nullptr, 0);
+    }
 }
 
 void DSi_NWifi::WMI_SendPacket(u16 len)
@@ -1352,6 +1597,14 @@ void DSi_NWifi::WMI_SendPacket(u16 len)
         if ((i&0xF)==0xF) printf("\n");
     }
     printf("\n");*/
+
+    if (ethertype == 0x8E88) // EAPOL
+    {
+        if (WpaEnabled) WPA_Receive(&LANBuffer[14], lan_len - 14);
+        return;
+    }
+    if (WpaEnabled && !WpaPortOpen)
+        return; // 802.1X: nothing but EAPOL until the 4-way handshake is done
 
     Platform::Net_SendPacket(LANBuffer, lan_len, DSi.UserData);
 }
@@ -1464,6 +1717,9 @@ void DSi_NWifi::SendWMIBSSInfo(u8 type, u8* data, u32 len)
 void DSi_NWifi::CheckRX()
 {
     if (!Mailbox[8].CanFit(2048))
+        return;
+
+    if (WpaEnabled && !WpaPortOpen)
         return;
 
     int rxlen = Platform::Net_RecvPacket(LANBuffer, DSi.UserData);
@@ -1622,6 +1878,18 @@ void DSi_NWifi::MSTimer(u32 param)
                 0x00, 0x07, 'm', 'e', 'l', 'o', 'n', 'A', 'P',              // SSID
             };
 
+            if (WpaEnabled)
+            {
+                // privacy bit, and an RSN element: CCMP group and pairwise, PSK
+                static const u8 rsn[] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F,
+                                         0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x02, 0x00, 0x00};
+                u8 secure[sizeof(beacon) + sizeof(rsn)];
+                memcpy(secure, beacon, sizeof(beacon));
+                secure[10] |= 0x10;
+                memcpy(secure + sizeof(beacon), rsn, sizeof(rsn));
+                SendWMIBSSInfo(0x01, secure, sizeof(secure));
+            }
+            else
             SendWMIBSSInfo(0x01, beacon, sizeof(beacon));
             Log(LogLevel::Debug, "send beacon\n");
         }
@@ -1631,6 +1899,13 @@ void DSi_NWifi::MSTimer(u32 param)
             u32 status = 0;
             SendWMIEvent(1, 0x100A, (u8*)&status, 4);
         }
+    }
+
+    if (ConnectionStatus == 1 && WpaEnabled && WpaState != 0 && WpaState != 3 && ++WpaTimer > 3000)
+    {
+        Log(LogLevel::Warn, "WPA: handshake timed out in state %d, dropping the station\n", WpaState);
+        WpaStats.Timeouts++;
+        DropConnection();
     }
 
     if (ConnectionStatus == 1)

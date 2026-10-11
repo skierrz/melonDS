@@ -20,6 +20,7 @@
 
 #include "NDS.h"
 #include "DSi.h"
+#include "DSi_NWifi.h"
 #include "Args.h"
 #include "NDSCart.h"
 #include "SPI_Firmware.h"
@@ -129,9 +130,14 @@ static void usage()
         "  --until TEXT         stop once a test line contains TEXT\n"
         "  --screenshot FILE    write both screens as PPM at the end\n"
         "  --keys MASK          held keys bitmask, active-low style handled for you (bit0=A ... bit9=L)\n"
-        "  --script FILE        timed input: lines \"FRAME KEYMASK HOLDFRAMES\" (# comments)\n"
+        "  --script FILE        timed input: lines \"FRAME KEYMASK HOLDFRAMES\" (# comments);\n"
+        "                       \"FRAME WIFIDROP\": the emulated access point drops the DSi;\n"
+        "                       \"FRAME WIFIREKEY\": it starts a WPA2 group rekey\n"
         "  --dump-ram FILE      write main RAM (4 or 16 MB) at the end\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
+        "  --trace-pc FRAME     from this frame on, print the ARM9 PC, LR and SP every 30 frames\n"
+        "  --wpa-ap SSID:PMK    DSi mode: a saved WPA2 access point (slot 4) with this PMK (64 hex digits);\n"
+        "                       with --net and SSID melonAP, the emulated access point uses WPA2 too\n"
         "  --arg STR            direct boot: pass STR as the next argv entry (first one is argv[0],\n"
         "                       e.g. sd:/_nds/nds-bootstrap-hb-nightly.nds), like a homebrew loader does\n"
         "  --net                connect Wi-Fi to a user-mode network (host reachable at 10.64.0.1)\n"
@@ -142,7 +148,9 @@ static void usage()
 
 int main(int argc, char** argv)
 {
-    std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath;
+    std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath, wpaap, wpassid;
+    std::vector<u8> wpapmk;
+    long tracepc = -1;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::vector<std::string> guestargs;
     for (int i = 1; i < argc; i++)
@@ -160,6 +168,8 @@ int main(int argc, char** argv)
         else if (a == "--keys") keys = std::stoul(next(), nullptr, 0);
         else if (a == "--script") scriptpath = next();
         else if (a == "--dump-ram") dumppath = next();
+        else if (a == "--wpa-ap") wpaap = next();
+        else if (a == "--trace-pc") tracepc = std::stol(next());
         else if (a == "--firmware-boot") direct = false;
         else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
@@ -192,6 +202,27 @@ int main(int argc, char** argv)
             aps[1] = Firmware::WifiAccessPoint();
             aps[2] = Firmware::WifiAccessPoint();
             for (auto& ap : ndsargs.Firmware.GetExtendedAccessPoints()) ap = Firmware::ExtendedWifiAccessPoint();
+        }
+        size_t colon = wpaap.find(':');
+        if (dsi && colon != std::string::npos && wpaap.size() - colon - 1 == 64)
+        {
+            wpassid = wpaap.substr(0, colon);
+            for (int i = 0; i < 32; i++)
+                wpapmk.push_back((u8)std::stoi(wpaap.substr(colon + 1 + i * 2, 2), nullptr, 16));
+            if (net && wpassid == "melonAP")
+                ndsargs.Firmware.GetAccessPoints()[0] = Firmware::WifiAccessPoint(); // only the WPA2 slot
+            // In memory only, like the access points above.
+            auto& ap = ndsargs.Firmware.GetExtendedAccessPoints()[0];
+            ap = Firmware::ExtendedWifiAccessPoint();
+            std::string ssid = wpaap.substr(0, std::min<size_t>(colon, 32));
+            memcpy(&ap.Bytes[0x40], ssid.data(), ssid.size());
+            ap.Bytes[0xE7] = 0x10;              // WPA/WPA2
+            ap.Bytes[0xE8] = (u8)ssid.size();
+            ap.Bytes[0xEF] = 1;                 // slot in use
+            for (int i = 0; i < 32; i++)
+                ap.Bytes[0x100 + i] = (u8)std::stoi(wpaap.substr(colon + 1 + i * 2, 2), nullptr, 16);
+            ap.Bytes[0x181] = 7;                // WPA2-AES
+            ap.UpdateChecksum();
         }
     }
     else
@@ -264,7 +295,7 @@ int main(int argc, char** argv)
     // melonDS key mask: bit set = released
     nds->SetKeyMask(~keys & 0xFFF);
 
-    struct Press { long frame; u32 keys; long hold; };
+    struct Press { long frame; u32 keys; long hold; bool wifidrop; bool wifirekey; };
     std::vector<Press> script;
     if (!scriptpath.empty())
     {
@@ -274,24 +305,51 @@ int main(int argc, char** argv)
         while (std::fgets(line, sizeof line, sf))
         {
             Press p{};
-            if (line[0] == '#' || std::sscanf(line, "%ld %i %ld", &p.frame, (int*)&p.keys, &p.hold) != 3) continue;
+            char word[16] = {};
+            if (line[0] == '#') continue;
+            if (std::sscanf(line, "%ld %15s", &p.frame, word) == 2 && !std::strcmp(word, "WIFIDROP"))
+                p.wifidrop = true;
+            else if (!std::strcmp(word, "WIFIREKEY"))
+                p.wifirekey = true;
+            else if (std::sscanf(line, "%ld %i %ld", &p.frame, (int*)&p.keys, &p.hold) != 3) continue;
             script.push_back(p);
         }
         std::fclose(sf);
     }
+
+    DSi_NWifi* nwifi = dsi ? dynamic_cast<DSi_NWifi*>(static_cast<DSi*>(nds.get())->SDIO.Port(0)) : nullptr;
+    if (nwifi && net && wpapmk.size() == 32 && wpassid == "melonAP")
+        nwifi->EnableWPA2(wpapmk.data());
 
     long f = 0;
     for (; f < frames && !hl::hit_until && !hl::stopped; f++)
     {
         u32 held = keys;
         for (auto& p : script)
-            if (f >= p.frame && f < p.frame + p.hold) held |= p.keys;
+        {
+            if (!p.wifidrop && !p.wifirekey && f >= p.frame && f < p.frame + p.hold) held |= p.keys;
+            if ((p.wifidrop || p.wifirekey) && f == p.frame && nwifi)
+            {
+                if (p.wifidrop) nwifi->DropConnection();
+                else nwifi->StartGroupRekey();
+            }
+        }
         nds->SetKeyMask(~held & 0xFFF);
         nds->RunFrame();
+        if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
+            std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],
+                        nds->ARM9.R[13], nds->ARM9.CPSR);
     }
 
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
     if (!shot.empty()) write_ppm(*nds, shot);
+    if (nwifi && !wpapmk.empty())
+    {
+        auto& w = nwifi->WpaStats;
+        std::printf("[wpa] handshakes %u, group rekeys %u, pairwise keys ok %u, group keys ok %u, "
+                    "key mismatches %u, bad frames %u, timeouts %u\n",
+                    w.Handshakes, w.GroupRekeys, w.PairwiseKeysOK, w.GroupKeysOK, w.KeyMismatches, w.BadFrames, w.Timeouts);
+    }
     if (!dumppath.empty())
     {
         FILE* df = std::fopen(dumppath.c_str(), "wb");
