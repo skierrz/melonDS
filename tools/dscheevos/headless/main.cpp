@@ -26,6 +26,7 @@
 #include "SPI_Firmware.h"
 #include "DSi_NAND.h"
 #include "FATStorage.h"
+#include <ctime>
 #include "Platform.h"
 #include "Net.h"
 #include "Net_Slirp.h"
@@ -142,6 +143,8 @@ static void usage()
         "                       e.g. sd:/_nds/nds-bootstrap-hb-nightly.nds), like a homebrew loader does\n"
         "  --net                connect Wi-Fi to a user-mode network (host reachable at 10.64.0.1)\n"
         "  --cache-model        time ARM9 cache hits/misses instead of melonDS's flat cache cost\n"
+        "  --rtc TIME           console clock at boot: \"host\" (default, the host's local time),\n"
+        "                       or YYYY-MM-DDTHH:MM:SS\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -152,6 +155,7 @@ int main(int argc, char** argv)
     std::vector<u8> wpapmk;
     long tracepc = -1;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
+    std::string rtc = "host";
     std::vector<std::string> guestargs;
     for (int i = 1; i < argc; i++)
     {
@@ -174,6 +178,7 @@ int main(int argc, char** argv)
         else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
         else if (a == "--cache-model") cachemodel = true;
+        else if (a == "--rtc") rtc = next();
         else if (a == "--net") net = true;
         else usage();
     }
@@ -261,6 +266,22 @@ int main(int argc, char** argv)
     if (!cart) { std::fprintf(stderr, "ROM did not parse\n"); return 2; }
 
     nds->Reset();
+    {
+        // melonDS starts the clock at 2000-01-01; games and DScheevos' unlock times want the real date
+        int y, mo, d, h, mi, sec;
+        if (rtc == "host")
+        {
+            std::time_t now = std::time(nullptr);
+            std::tm lt = *std::localtime(&now);
+            y = lt.tm_year + 1900; mo = lt.tm_mon + 1; d = lt.tm_mday; h = lt.tm_hour; mi = lt.tm_min; sec = lt.tm_sec;
+        }
+        else if (std::sscanf(rtc.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) != 6)
+        {
+            std::fprintf(stderr, "bad --rtc %s\n", rtc.c_str());
+            return 2;
+        }
+        nds->RTC.SetDateTime(y, mo, d, h, mi, sec);
+    }
     nds->SetNDSCart(std::move(cart));
     if (direct || nds->NeedsDirectBoot())
         nds->SetupDirectBoot(fs::path(rom).filename().string());

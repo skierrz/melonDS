@@ -412,6 +412,37 @@ void FATStorage::SaveIndex()
 }
 
 
+bool FATStorage::ContentDiffers(const std::string& path, fs::path out)
+{
+    FF_FIL file;
+    if (f_open(&file, path.c_str(), FA_OPEN_EXISTING | FA_READ) != FR_OK)
+        return false;
+    FileHandle* fin = OpenFile(out.u8string(), FileMode::Read);
+    if (!fin)
+    {
+        f_close(&file);
+        return true;
+    }
+    bool differs = false;
+    u8 a[4096], b[4096];
+    for (;;)
+    {
+        u32 nread = 0;
+        f_read(&file, a, sizeof(a), &nread);
+        size_t hread = FileRead(b, 1, sizeof(b), fin);
+        if (nread != hread || memcmp(a, b, nread) != 0)
+        {
+            differs = true;
+            break;
+        }
+        if (nread < sizeof(a))
+            break;
+    }
+    CloseFile(fin);
+    f_close(&file);
+    return differs;
+}
+
 bool FATStorage::ExportFile(const std::string& path, fs::path out)
 {
     FF_FIL file;
@@ -521,6 +552,10 @@ void FATStorage::ExportDirectory(const std::string& path, const std::string& out
 
                 FileIndexEntry& entry = FileIndex[fullpath];
                 if ((info.fsize != entry.Size) || (lastmod != entry.LastModifiedInternal))
+                    doexport = true;
+                // Writes straight to a file's clusters (nds-bootstrap's fileWrite) leave
+                // its size and date alone, so compare the contents of small files too
+                else if (info.fsize <= (1u << 20) && ContentDiffers("0:/"+fullpath, outpath))
                     doexport = true;
 
                 entry.Size = info.fsize;

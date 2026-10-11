@@ -87,6 +87,7 @@ private:
     void SaveIndex();
 
     bool ExportFile(const std::string& path, std::filesystem::path out);
+    bool ContentDiffers(const std::string& path, std::filesystem::path out);
     void ExportDirectory(const std::string& path, const std::string& outbase, int level);
     bool DeleteHostDirectory(const std::string& path, const std::string& outbase, int level);
     void ExportChanges(const std::string& outbase);
