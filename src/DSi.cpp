@@ -733,6 +733,11 @@ void DSi::SetupDirectBoot()
     {
         SCFG_EXT[0] = 0x8307F100;
         SCFG_EXT[1] = 0x93FBFB06;
+
+        // the DSi launcher grants SD/MMC access (SCFG_EXT7 bit 18) only to
+        // titles that request it in header 0x1B8 (ARM7 SCFG_EXT7 setting)
+        if (header.DSiPermissions[1] & (1<<18))
+            SCFG_EXT[1] |= (1<<18);
     }
 
     ARM9.CP15Write(0x100, 0x00056078);

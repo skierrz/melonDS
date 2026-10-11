@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <fstream>
@@ -47,6 +48,8 @@ bool stopped = false;
 static melonDS::Net* g_net = nullptr;
 int hl_net_send(melonDS::u8* data, int len) { return g_net ? g_net->SendPacket(data, len, 0) : len; }
 int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) : 0; }
+
+void hl_signal_stop() { hl::stopped = true; }
 
 // Called by Platform::Log for every message.
 void hl_log(Platform::LogLevel level, const char* msg)
@@ -127,6 +130,8 @@ static void usage()
         "  --screenshot FILE    write both screens as PPM at the end\n"
         "  --keys MASK          held keys bitmask, active-low style handled for you (bit0=A ... bit9=L)\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
+        "  --arg STR            direct boot: pass STR as the next argv entry (first one is argv[0],\n"
+        "                       e.g. sd:/_nds/nds-bootstrap-hb-nightly.nds), like a homebrew loader does\n"
         "  --net                connect Wi-Fi to a user-mode network (host reachable at 10.64.0.1)\n"
         "  --cache-model        time ARM9 cache hits/misses instead of melonDS's flat cache cost\n"
         "  --verbose            show emulator info/debug logs\n");
@@ -137,6 +142,7 @@ int main(int argc, char** argv)
 {
     std::string rom, mode = "ds", biosdir, nandpath, sddir, shot;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
+    std::vector<std::string> guestargs;
     for (int i = 1; i < argc; i++)
     {
         std::string a = argv[i];
@@ -151,6 +157,7 @@ int main(int argc, char** argv)
         else if (a == "--screenshot") shot = next();
         else if (a == "--keys") keys = std::stoul(next(), nullptr, 0);
         else if (a == "--firmware-boot") direct = false;
+        else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
         else if (a == "--cache-model") cachemodel = true;
         else if (a == "--net") net = true;
@@ -201,7 +208,7 @@ int main(int argc, char** argv)
         if (!sddir.empty())
         {
             fs::create_directories(sddir);
-            dargs.DSiSDCard = FATStorage(FATStorageArgs{sddir + ".img", 0, false, sddir});
+            dargs.DSiSDCard = FATStorage(FATStorageArgs{sddir + ".img", 1ull << 30, false, sddir} /* 1 GB: melonDS formats FAT32 only from 1 GB up */);
         }
         nds = std::make_unique<DSi>(std::move(dargs));
     }
@@ -213,7 +220,7 @@ int main(int argc, char** argv)
     if (!dsi && !sddir.empty())
     {
         fs::create_directories(sddir);
-        cartargs = NDSCart::NDSCartArgs{.SDCard = FATStorageArgs{sddir + ".img", 0, false, sddir}};
+        cartargs = NDSCart::NDSCartArgs{.SDCard = FATStorageArgs{sddir + ".img", 1ull << 30, false, sddir} /* 1 GB: melonDS formats FAT32 only from 1 GB up */};
     }
     auto cart = NDSCart::ParseROM(romdata.data(), (u32)romdata.size(), nullptr, std::move(cartargs));
     if (!cart) { std::fprintf(stderr, "ROM did not parse\n"); return 2; }
@@ -222,6 +229,23 @@ int main(int argc, char** argv)
     nds->SetNDSCart(std::move(cart));
     if (direct || nds->NeedsDirectBoot())
         nds->SetupDirectBoot(fs::path(rom).filename().string());
+    if (!guestargs.empty())
+    {
+        // Pass argv the way devkitPro's homebrew bootloader (and TWiLight Menu) does:
+        // NUL-separated command line placed word-aligned after the ARM9 (or ARM9i,
+        // if loaded higher) binary, described by the libnds argv struct at
+        // 0x02FFFE70. crt0 copies it to the heap before clearing BSS.
+        const NDSHeader& hdr = nds->NDSCartSlot.GetCart()->GetHeader();
+        u32 dst = (hdr.ARM9RAMAddress + hdr.ARM9Size + 3) & ~3u;
+        if (dsi && (hdr.UnitCode & 0x02) && hdr.DSiARM9iSize)
+            dst = std::max(dst, (hdr.DSiARM9iRAMAddress + hdr.DSiARM9iSize + 3) & ~3u);
+        std::string cmdline;
+        for (auto& s : guestargs) { cmdline += s; cmdline += '\0'; }
+        for (size_t i = 0; i < cmdline.size(); i++) nds->ARM9Write8(dst + i, (u8)cmdline[i]);
+        nds->ARM9Write32(0x02FFFE70, 0x5F617267);           // '_arg'
+        nds->ARM9Write32(0x02FFFE74, dst);                  // command line
+        nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
+    }
     nds->ARM9.CacheModel = cachemodel;
 
     melonDS::Net netstack;

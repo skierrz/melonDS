@@ -15,6 +15,7 @@
 #include "SPI_Firmware.h"
 
 void hl_log(melonDS::Platform::LogLevel level, const char* msg);
+void hl_signal_stop();
 int hl_net_send(melonDS::u8* data, int len);
 int hl_net_recv(melonDS::u8* data);
 
@@ -24,6 +25,7 @@ namespace melonDS::Platform
 void SignalStop(StopReason reason, void*)
 {
     std::fprintf(stderr, "[runner] emulator stop, reason %d\n", (int)reason);
+    hl_signal_stop();
 }
 
 static const char* fmode(FileMode m)
