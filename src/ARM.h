@@ -319,6 +319,23 @@ public:
     void ICacheInvalidateByAddr(u32 addr);
     void ICacheInvalidateAll();
 
+    // Optional timing-only cache model (off by default). Tracks which lines
+    // each cache holds so hits and misses cost what they would on hardware;
+    // it never changes the data the CPU sees.
+    struct CacheModelStats
+    {
+        u64 IHit, IMiss, DReadHit, DReadMiss, DWriteHit, DWriteMiss, DWriteBack;
+    };
+    bool CacheModel = false;
+    CacheModelStats CacheStats {};
+    void CacheModelReset();
+    s32 CacheModelCode(u32 addr);
+    s32 CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached);
+    void CacheModelDInvalidateLine(u32 addr, bool clean);
+    void CacheModelDInvalidateSetWay(u32 val, bool clean);
+    void CacheModelDInvalidateAll();
+    s32 DataCacheCycles(u32 addr, bool write, bool seq, s32 table);
+
     void CP15Write(u32 id, u32 val);
     u32 CP15Read(u32 id) const;
 
@@ -341,6 +358,13 @@ public:
     u8 ICache[0x2000];
     u32 ICacheTags[64*4];
     u8 ICacheCount[64];
+
+    // cache model state: line address | 1 (valid) | 2 (dirty, data cache only)
+    u32 CMITags[64*4];
+    u8 CMICount[64];
+    u32 CMDTags[32*4];
+    u8 CMDCount[32];
+    u32 CMLastDLine;
 
     u32 PU_CodeCacheable;
     u32 PU_DataCacheable;

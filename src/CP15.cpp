@@ -59,6 +59,7 @@ void ARMv5::CP15Reset()
     memset(ICache, 0, 0x2000);
     ICacheInvalidateAll();
     memset(ICacheCount, 0, 64);
+    CacheModelReset();
 
     PU_CodeCacheable = 0;
     PU_DataCacheable = 0;
@@ -406,6 +407,12 @@ void ARMv5::ICacheLookup(u32 addr)
 
 void ARMv5::ICacheInvalidateByAddr(u32 addr)
 {
+    for (int w = 0; w < 4; w++)
+    {
+        u32& t = CMITags[(((addr >> 5) & 0x3F) << 2) + w];
+        if ((t & ~0x1F) == (addr & ~0x1F)) t = 0;
+    }
+
     u32 tag = addr & 0xFFFFF800;
     u32 id = (addr >> 5) & 0x3F;
 
@@ -436,6 +443,133 @@ void ARMv5::ICacheInvalidateAll()
 {
     for (int i = 0; i < 64*4; i++)
         ICacheTags[i] = 1;
+    memset(CMITags, 0, sizeof(CMITags));
+}
+
+
+// ===== timing-only cache model =====
+// ARM946E-S as used in the DS: 8 KB I-cache (64 sets) and 4 KB D-cache
+// (32 sets), both 4-way with 32-byte lines. A miss costs a line fill: one
+// nonsequential then seven sequential 32-bit reads at the bus timing of the
+// address. Stores never allocate. A dirty victim costs a line write.
+
+void ARMv5::CacheModelReset()
+{
+    memset(CMITags, 0, sizeof(CMITags));
+    memset(CMICount, 0, sizeof(CMICount));
+    memset(CMDTags, 0, sizeof(CMDTags));
+    memset(CMDCount, 0, sizeof(CMDCount));
+    CMLastDLine = 0xFFFFFFFF;
+    CacheStats = {};
+}
+
+static inline s32 CacheModelLineCost(NDS& nds, u32 addr)
+{
+    u8* t = nds.ARM9MemTimings[addr >> 14];
+    return (t[2] + t[3] * 7) << nds.ARM9ClockShift;
+}
+
+static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrobin)
+{
+    if (roundrobin)
+    {
+        u32 way = count[set];
+        count[set] = (way + 1) & 3;
+        return way;
+    }
+    return cpu.RandomLineIndex();
+}
+
+s32 ARMv5::CacheModelCode(u32 addr)
+{
+    u32 line = addr & ~0x1F;
+    u32 set = (addr >> 5) & 0x3F;
+    u32* tags = &CMITags[set << 2];
+    for (int w = 0; w < 4; w++)
+    {
+        if ((tags[w] & ~0x1F) == line && (tags[w] & 1))
+        {
+            CacheStats.IHit++;
+            return 1;
+        }
+    }
+    CacheStats.IMiss++;
+    tags[CacheModelVictim(*this, CMICount, set, CP15Control & (1<<14))] = line | 1;
+    return CacheModelLineCost(NDS, addr);
+}
+
+s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached)
+{
+    u32 line = addr & ~0x1F;
+    if (seq && line == CMLastDLine)
+        return 1; // LDM/STM continuing within the line just accessed
+    CMLastDLine = line;
+
+    u32 set = (addr >> 5) & 0x1F;
+    u32* tags = &CMDTags[set << 2];
+    for (int w = 0; w < 4; w++)
+    {
+        if ((tags[w] & ~0x1F) == line && (tags[w] & 1))
+        {
+            if (!write)
+            {
+                CacheStats.DReadHit++;
+                return 1;
+            }
+            CacheStats.DWriteHit++;
+            if (writeback)
+            {
+                tags[w] |= 2;
+                return 1;
+            }
+            return uncached; // write-through: also goes to memory
+        }
+    }
+
+    if (write)
+    {
+        CacheStats.DWriteMiss++;
+        return uncached; // no write-allocate
+    }
+
+    CacheStats.DReadMiss++;
+    u32 way = CacheModelVictim(*this, CMDCount, set, CP15Control & (1<<14));
+    s32 cost = CacheModelLineCost(NDS, addr);
+    if ((tags[way] & 3) == 3)
+    {
+        CacheStats.DWriteBack++;
+        cost += CacheModelLineCost(NDS, tags[way] & ~0x1F);
+    }
+    tags[way] = line | 1;
+    return cost;
+}
+
+void ARMv5::CacheModelDInvalidateLine(u32 addr, bool clean)
+{
+    u32 line = addr & ~0x1F;
+    u32* tags = &CMDTags[((addr >> 5) & 0x1F) << 2];
+    for (int w = 0; w < 4; w++)
+        if ((tags[w] & ~0x1F) == line)
+        {
+            if (clean && (tags[w] & 3) == 3) CacheStats.DWriteBack++;
+            tags[w] = 0;
+        }
+    CMLastDLine = 0xFFFFFFFF;
+}
+
+void ARMv5::CacheModelDInvalidateSetWay(u32 val, bool clean)
+{
+    // set index in bits [9:5] for a 4 KB cache, way in bits [31:30]
+    u32 idx = (((val >> 5) & 0x1F) << 2) | (val >> 30);
+    if (clean && (CMDTags[idx] & 3) == 3) CacheStats.DWriteBack++;
+    CMDTags[idx] = 0;
+    CMLastDLine = 0xFFFFFFFF;
+}
+
+void ARMv5::CacheModelDInvalidateAll()
+{
+    memset(CMDTags, 0, sizeof(CMDTags));
+    CMLastDLine = 0xFFFFFFFF;
 }
 
 
@@ -619,18 +753,40 @@ void ARMv5::CP15Write(u32 id, u32 val)
         return;
 
 
+    case 0x760:
+        CacheModelDInvalidateAll();
+        return;
     case 0x761:
         //printf("inval data cache %08X\n", val);
+        CacheModelDInvalidateLine(val, false);
         return;
     case 0x762:
         //printf("inval data cache SI\n");
+        CacheModelDInvalidateSetWay(val, false);
         return;
 
     case 0x7A1:
         //printf("flush data cache %08X\n", val);
+        // clean: write back but keep the line
+        for (int w = 0; w < 4; w++)
+        {
+            u32& t = CMDTags[(((val >> 5) & 0x1F) << 2) + w];
+            if ((t & ~0x1F) == (val & ~0x1F) && (t & 3) == 3) { t &= ~2; CacheStats.DWriteBack++; }
+        }
         return;
     case 0x7A2:
         //printf("flush data cache SI\n");
+        {
+            u32& t = CMDTags[(((val >> 5) & 0x1F) << 2) | (val >> 30)];
+            if ((t & 3) == 3) { t &= ~2; CacheStats.DWriteBack++; }
+        }
+        return;
+
+    case 0x7E1:
+        CacheModelDInvalidateLine(val, true);
+        return;
+    case 0x7E2:
+        CacheModelDInvalidateSetWay(val, true);
         return;
 
 
@@ -802,7 +958,7 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
     if (CodeCycles == 0xFF) // cached memory. hax
     {
         if (branch || !(addr & 0x1F))
-            CodeCycles = kCodeCacheTiming;//ICacheLookup(addr);
+            CodeCycles = CacheModel ? CacheModelCode(addr) : kCodeCacheTiming;//ICacheLookup(addr);
         else
             CodeCycles = 1;
 
@@ -814,6 +970,20 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
     return BusRead32(addr);
 }
 
+
+
+// Data access cost. With the cache model off this is the stock table value.
+// With it on, cacheable pages cost a hit or a line fill; others use bus timing
+// (the uncached value melonDS would charge for the page).
+inline s32 ARMv5::DataCacheCycles(u32 addr, bool write, bool seq, s32 table)
+{
+    if (!CacheModel) return table;
+    u8 pu = PU_Map[addr >> 12];
+    if (!(pu & 0x10)) return table;
+    u8* bus = NDS.ARM9MemTimings[addr >> 14];
+    s32 uncached = (write ? (seq ? bus[3] : bus[2]) : bus[2]) << NDS.ARM9ClockShift;
+    return CacheModelData(addr, write, pu & 0x20, seq, uncached);
+}
 
 void ARMv5::DataRead8(u32 addr, u32* val)
 {
@@ -839,7 +1009,7 @@ void ARMv5::DataRead8(u32 addr, u32* val)
     }
 
     *val = BusRead8(addr);
-    DataCycles = MemTimings[addr >> 12][1];
+    DataCycles = DataCacheCycles(addr, false, false, MemTimings[addr >> 12][1]);
 }
 
 void ARMv5::DataRead16(u32 addr, u32* val)
@@ -868,7 +1038,7 @@ void ARMv5::DataRead16(u32 addr, u32* val)
     }
 
     *val = BusRead16(addr);
-    DataCycles = MemTimings[addr >> 12][1];
+    DataCycles = DataCacheCycles(addr, false, false, MemTimings[addr >> 12][1]);
 }
 
 void ARMv5::DataRead32(u32 addr, u32* val)
@@ -897,7 +1067,7 @@ void ARMv5::DataRead32(u32 addr, u32* val)
     }
 
     *val = BusRead32(addr);
-    DataCycles = MemTimings[addr >> 12][2];
+    DataCycles = DataCacheCycles(addr, false, false, MemTimings[addr >> 12][2]);
 }
 
 void ARMv5::DataRead32S(u32 addr, u32* val)
@@ -918,7 +1088,7 @@ void ARMv5::DataRead32S(u32 addr, u32* val)
     }
 
     *val = BusRead32(addr);
-    DataCycles += MemTimings[addr >> 12][3];
+    DataCycles += DataCacheCycles(addr, false, true, MemTimings[addr >> 12][3]);
 }
 
 void ARMv5::DataWrite8(u32 addr, u8 val)
@@ -946,7 +1116,7 @@ void ARMv5::DataWrite8(u32 addr, u8 val)
     }
 
     BusWrite8(addr, val);
-    DataCycles = MemTimings[addr >> 12][1];
+    DataCycles = DataCacheCycles(addr, true, false, MemTimings[addr >> 12][1]);
 }
 
 void ARMv5::DataWrite16(u32 addr, u16 val)
@@ -976,7 +1146,7 @@ void ARMv5::DataWrite16(u32 addr, u16 val)
     }
 
     BusWrite16(addr, val);
-    DataCycles = MemTimings[addr >> 12][1];
+    DataCycles = DataCacheCycles(addr, true, false, MemTimings[addr >> 12][1]);
 }
 
 void ARMv5::DataWrite32(u32 addr, u32 val)
@@ -1006,7 +1176,7 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
     }
 
     BusWrite32(addr, val);
-    DataCycles = MemTimings[addr >> 12][2];
+    DataCycles = DataCacheCycles(addr, true, false, MemTimings[addr >> 12][2]);
 }
 
 void ARMv5::DataWrite32S(u32 addr, u32 val)
@@ -1030,7 +1200,7 @@ void ARMv5::DataWrite32S(u32 addr, u32 val)
     }
 
     BusWrite32(addr, val);
-    DataCycles += MemTimings[addr >> 12][3];
+    DataCycles += DataCacheCycles(addr, true, true, MemTimings[addr >> 12][3]);
 }
 
 void ARMv5::GetCodeMemRegion(u32 addr, MemRegion* region)
