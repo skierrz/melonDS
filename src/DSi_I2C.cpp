@@ -447,6 +447,7 @@ void DSi_BPTWL::Write(u8 val, bool last)
     }
 
     //printf("BPTWL: write %02X -> %02X\n", CurPos, val);
+    if (WriteHook) WriteHook((u8)CurPos, val);
     CurPos++; // CHECKME
 }
 

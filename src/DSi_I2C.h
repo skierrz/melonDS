@@ -119,6 +119,9 @@ public:
     void DoPowerButtonForceShutdown();
     void DoVolumeSwitchPress(u32 key);
 
+    // Test bench: called after every register write (null: none)
+    void (*WriteHook)(u8 reg, u8 val) = nullptr;
+
     void SetIRQ(u8 irqFlag);
 
     void Acquire() override;

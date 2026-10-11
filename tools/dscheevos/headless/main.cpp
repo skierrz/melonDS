@@ -21,6 +21,7 @@
 #include "NDS.h"
 #include "DSi.h"
 #include "DSi_NWifi.h"
+#include "DSi_I2C.h"
 #include "Args.h"
 #include "NDSCart.h"
 #include "SPI_Firmware.h"
@@ -42,6 +43,7 @@ std::string until;           // stop marker
 bool hit_until = false;
 std::string linebuf;         // nocash prints may arrive in pieces
 bool stopped = false;
+long frame = 0;              // frame being run, for traces
 }
 
 // Wi-Fi: frames from the emulated Wi-Fi chip go through a user-mode network
@@ -52,6 +54,13 @@ int hl_net_send(melonDS::u8* data, int len) { return g_net ? g_net->SendPacket(d
 int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) : 0; }
 
 void hl_signal_stop() { hl::stopped = true; }
+
+// --trace-led: every write to BPTWL[30h] (the DSi's Wi-Fi LED)
+static void trace_led(u8 reg, u8 val)
+{
+    if (reg == 0x30)
+        std::printf("[led] frame %ld 30h=%02x\n", hl::frame, val);
+}
 
 // Called by Platform::Log for every message.
 void hl_log(Platform::LogLevel level, const char* msg)
@@ -137,6 +146,7 @@ static void usage()
         "  --dump-ram FILE      write main RAM (4 or 16 MB) at the end\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
         "  --trace-pc FRAME     from this frame on, print the ARM9 PC, LR and SP every 30 frames\n"
+        "  --trace-led          DSi mode: print every write to BPTWL[30h] (Wi-Fi LED) with the frame number\n"
         "  --wpa-ap SSID:PMK    DSi mode: a saved WPA2 access point (slot 4) with this PMK (64 hex digits);\n"
         "                       with --net and SSID melonAP, the emulated access point uses WPA2 too\n"
         "  --arg STR            direct boot: pass STR as the next argv entry (first one is argv[0],\n"
@@ -154,6 +164,7 @@ int main(int argc, char** argv)
     std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath, wpaap, wpassid;
     std::vector<u8> wpapmk;
     long tracepc = -1;
+    bool traceled = false;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
     std::vector<std::string> guestargs;
@@ -174,6 +185,7 @@ int main(int argc, char** argv)
         else if (a == "--dump-ram") dumppath = next();
         else if (a == "--wpa-ap") wpaap = next();
         else if (a == "--trace-pc") tracepc = std::stol(next());
+        else if (a == "--trace-led") traceled = true;
         else if (a == "--firmware-boot") direct = false;
         else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
@@ -341,6 +353,8 @@ int main(int argc, char** argv)
     DSi_NWifi* nwifi = dsi ? dynamic_cast<DSi_NWifi*>(static_cast<DSi*>(nds.get())->SDIO.Port(0)) : nullptr;
     if (nwifi && net && wpapmk.size() == 32 && wpassid == "melonAP")
         nwifi->EnableWPA2(wpapmk.data());
+    if (dsi && traceled)
+        static_cast<DSi*>(nds.get())->I2C.GetBPTWL()->WriteHook = trace_led;
 
     long f = 0;
     for (; f < frames && !hl::hit_until && !hl::stopped; f++)
@@ -356,6 +370,7 @@ int main(int argc, char** argv)
             }
         }
         nds->SetKeyMask(~held & 0xFFF);
+        hl::frame = f;
         nds->RunFrame();
         if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
             std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],
