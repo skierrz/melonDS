@@ -143,6 +143,7 @@ private:
     u16 StopAction;
 
     u16 Command;
+    u64 CmdBusyUntil; // ARM7 timestamp until which SD_IRQ_STATUS1 bit 14 (CMD_BUSY) reads as set
     u32 Param;
     u16 ResponseBuffer[8];
 

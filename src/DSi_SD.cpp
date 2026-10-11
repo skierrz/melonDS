@@ -108,6 +108,7 @@ void DSi_SDHost::Reset()
     SDOption = 0;
 
     Command = 0;
+    CmdBusyUntil = 0;
     Param = 0;
     memset(ResponseBuffer, 0, sizeof(ResponseBuffer));
 
@@ -555,7 +556,17 @@ u16 DSi_SDHost::Read(u32 addr)
             }
             return ret;
         }
-    case 0x01E: return ((IRQStatus >> 16) & 0x8B7F);
+    case 0x01E:
+        {
+            u16 ret = ((IRQStatus >> 16) & 0x8B7F);
+            // commands complete instantly here, but on hardware the command
+            // line stays busy while the command and response are clocked out;
+            // some software (e.g. nds-bootstrap's non-blocking NDMA reads)
+            // waits to see CMD_BUSY before it returns
+            if (DSi.ARM7Timestamp < CmdBusyUntil)
+                ret |= 0x4000;
+            return ret;
+        }
     case 0x020: return IRQMask & 0x031D;
     case 0x022: return (IRQMask >> 16) & 0x8B7F;
 
@@ -642,6 +653,11 @@ void DSi_SDHost::Write(u32 addr, u16 val)
         {
             Command = val;
             u8 cmd = Command & 0x3F;
+
+            // ~48-bit command + 48-bit response, at the SD clock (HCLK/2 .. HCLK/512)
+            u32 clkdiv = 2;
+            for (u32 b = SDClock & 0xFF; b; b >>= 1) clkdiv <<= 1;
+            CmdBusyUntil = DSi.ARM7Timestamp + 96 * clkdiv;
 
             DSi_SDDevice* dev = Ports[PortSelect & 0x1].get();
             if (dev)
