@@ -129,6 +129,8 @@ static void usage()
         "  --until TEXT         stop once a test line contains TEXT\n"
         "  --screenshot FILE    write both screens as PPM at the end\n"
         "  --keys MASK          held keys bitmask, active-low style handled for you (bit0=A ... bit9=L)\n"
+        "  --script FILE        timed input: lines \"FRAME KEYMASK HOLDFRAMES\" (# comments)\n"
+        "  --dump-ram FILE      write main RAM (4 or 16 MB) at the end\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
         "  --arg STR            direct boot: pass STR as the next argv entry (first one is argv[0],\n"
         "                       e.g. sd:/_nds/nds-bootstrap-hb-nightly.nds), like a homebrew loader does\n"
@@ -140,7 +142,7 @@ static void usage()
 
 int main(int argc, char** argv)
 {
-    std::string rom, mode = "ds", biosdir, nandpath, sddir, shot;
+    std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::vector<std::string> guestargs;
     for (int i = 1; i < argc; i++)
@@ -156,6 +158,8 @@ int main(int argc, char** argv)
         else if (a == "--until") hl::until = next();
         else if (a == "--screenshot") shot = next();
         else if (a == "--keys") keys = std::stoul(next(), nullptr, 0);
+        else if (a == "--script") scriptpath = next();
+        else if (a == "--dump-ram") dumppath = next();
         else if (a == "--firmware-boot") direct = false;
         else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
@@ -260,12 +264,39 @@ int main(int argc, char** argv)
     // melonDS key mask: bit set = released
     nds->SetKeyMask(~keys & 0xFFF);
 
+    struct Press { long frame; u32 keys; long hold; };
+    std::vector<Press> script;
+    if (!scriptpath.empty())
+    {
+        FILE* sf = std::fopen(scriptpath.c_str(), "r");
+        if (!sf) { std::fprintf(stderr, "cannot open %s\n", scriptpath.c_str()); return 2; }
+        char line[256];
+        while (std::fgets(line, sizeof line, sf))
+        {
+            Press p{};
+            if (line[0] == '#' || std::sscanf(line, "%ld %i %ld", &p.frame, (int*)&p.keys, &p.hold) != 3) continue;
+            script.push_back(p);
+        }
+        std::fclose(sf);
+    }
+
     long f = 0;
     for (; f < frames && !hl::hit_until && !hl::stopped; f++)
+    {
+        u32 held = keys;
+        for (auto& p : script)
+            if (f >= p.frame && f < p.frame + p.hold) held |= p.keys;
+        nds->SetKeyMask(~held & 0xFFF);
         nds->RunFrame();
+    }
 
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
     if (!shot.empty()) write_ppm(*nds, shot);
+    if (!dumppath.empty())
+    {
+        FILE* df = std::fopen(dumppath.c_str(), "wb");
+        if (df) { std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, df); std::fclose(df); }
+    }
     if (cachemodel)
     {
         auto& c = nds->ARM9.CacheStats;
