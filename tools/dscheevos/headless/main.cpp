@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <string>
+#include <map>
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -118,8 +119,9 @@ static void on_vblank(ARMv5& cpu)
         if (lagged) { lag++; maxlagrun = std::max(maxlagrun, ++lagrun); }
         else lagrun = 0;
         if (log)
-            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
-                         (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged);
+            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d,%08x,%08x,%08x\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
+                         (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged,
+                         cpu.R[15], nds->ARM7.R[15], cpu.CPSR);
         if (stopafter >= 0 && (long)n >= stopafter)
             done = true;
     }
@@ -159,13 +161,24 @@ static void report(NDS& nds)
 }
 }
 
-// --watch-write: bus writes to a main RAM range (the first 40 printed, all counted)
+// --watch-write: bus writes to a main RAM range (the first 40 printed, all counted).
+// --watch-skip LO:SIZE: leave out ARM9 writes from code in that range (e.g. the
+// module writing its own memory); a summary per writer is printed at the end.
 static unsigned long g_watchcount = 0;
+static u32 g_watchskiplo = 0, g_watchskipsize = 0;
+struct WatchWriter { unsigned long n; u32 lo, hi; long first, last; };
+static std::map<std::pair<int, u32>, WatchWriter> g_watchers;
 static void watch_write(NDS& nds, int cpu, u32 addr, u32 val, int size)
 {
+    u32 pc = cpu ? nds.ARM7.R[15] : nds.ARM9.R[15];
+    if (!cpu && pc - g_watchskiplo < g_watchskipsize)
+        return;
+    auto& w = g_watchers[{cpu, pc}];
+    if (!w.n) { w.lo = w.hi = addr; w.first = hl::frame; }
+    w.n++; w.lo = std::min(w.lo, addr); w.hi = std::max(w.hi, addr); w.last = hl::frame;
     if (g_watchcount++ < 40)
         std::printf("[watch] frame %ld ARM%d pc=%08x lr=%08x write%d %08x = %0*x\n", hl::frame, cpu ? 7 : 9,
-                    cpu ? nds.ARM7.R[15] : nds.ARM9.R[15], cpu ? nds.ARM7.R[14] : nds.ARM9.R[14], size * 8, addr, size * 2, val);
+                    pc, cpu ? nds.ARM7.R[14] : nds.ARM9.R[14], size * 8, addr, size * 2, val);
 }
 
 // --trace-led: every write to BPTWL[30h] (the DSi's Wi-Fi LED)
@@ -319,6 +332,7 @@ int main(int argc, char** argv)
         else if (a == "--rtc") rtc = next();
         else if (a == "--net") net = true;
         else if (a == "--watch-write") watch = next();
+        else if (a == "--watch-skip") { std::string v = next(); size_t c = v.find(':'); g_watchskiplo = std::stoul(v.substr(0, c), nullptr, 0); g_watchskipsize = std::stoul(v.substr(c + 1), nullptr, 0); }
         else if (a == "--profile") profile = true;
         else if (a == "--module-base") prof::base = std::stoul(next(), nullptr, 0);
         else if (a == "--profile-frames") prof::stopafter = std::stol(next());
@@ -457,7 +471,7 @@ int main(int argc, char** argv)
         {
             prof::log = std::fopen(proflog.c_str(), "w");
             if (!prof::log) { std::fprintf(stderr, "cannot write %s\n", proflog.c_str()); return 2; }
-            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag\n");
+            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr\n");
         }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
@@ -556,7 +570,11 @@ int main(int argc, char** argv)
             (unsigned long long)c.DWriteHit, (unsigned long long)c.DWriteMiss, (unsigned long long)c.DWriteBack);
     }
     if (nds->WatchHook)
+    {
         std::printf("[watch] %lu writes\n", g_watchcount);
+        for (auto& [k, w] : g_watchers)
+            std::printf("[watch] ARM%d pc=%08x: %lu writes to %08x-%08x, frames %ld-%ld\n", k.first ? 7 : 9, k.second, w.n, w.lo, w.hi, w.first, w.last);
+    }
     if (profile)
     {
         prof::report(*nds);
