@@ -76,7 +76,19 @@ static std::map<DKey, DAgg> dagg;
 static u32 dpre[2];
 // last DISPCNT A read covering byte 2, and the last write
 static long lr_t = -1; static u32 lr_val = 0; static u64 lr_seq = 0, lw_seq = 0, seq = 0;
-static int winlog_n = 0;
+// a DISPCNT A read covering byte 2 that no RMW write follows within 2 lines:
+// a bare read (the value went somewhere else, e.g. GX_DispOff-style saves)
+static bool pr_active = false; static u32 pr_pc = 0, pr_line = 0; static long pr_t = 0;
+struct BAgg { u64 n = 0, win = 0, b[4] = {}; };
+static std::map<u32, BAgg> bare;
+static void bare_finish()
+{
+    if (!pr_active) return;
+    auto& b = bare[pr_pc];
+    b.n++; b.b[bucket(pr_line)]++;
+    if (in_window(pr_line)) b.win++;
+    pr_active = false;
+}
 struct WinEv { long frame; u32 line; int eng, write, size, off; u32 pc; int ctx; u32 oldv, newv; const char* cls; };
 static std::vector<WinEv> winev;            // first 400 DISPCNT accesses in the window
 static std::vector<WinEv> modeev;           // first 200 DISPCNT A mode changes
@@ -106,6 +118,15 @@ static u64 dma4 = 0; static std::vector<std::pair<long, u32>> dma4ev;
 // ---- IRQ handler samples ----
 struct HSample { long frame; u32 dtcm, ptr; std::vector<u8> code; };
 static std::vector<HSample> hs;
+
+static u32 read9(NDS& nds, u32 a)
+{
+    auto& c = nds.ARM9; u32 v;
+    if (a < c.ITCMSize) std::memcpy(&v, &c.ITCM[a & (ITCMPhysicalSize - 1)], 4);
+    else if ((a & c.DTCMMask) == c.DTCMBase) std::memcpy(&v, &c.DTCM[a & (DTCMPhysicalSize - 1)], 4);
+    else { auto hook = nds.IOHook; nds.IOHook = nullptr; v = nds.ARM9Read32(a); nds.IOHook = hook; }
+    return v;
+}
 
 static void sample_handler(NDS& nds)
 {
@@ -152,6 +173,7 @@ static void on_line(NDS& nds, u32 vc)
         if (frame == 600 || frame == 3600 || frame == 18000)
             sample_handler(nds);
     }
+    if (pr_active && frame * 263 + (long)vc - pr_t > 2) bare_finish();
     if (ime && (nds.IE[0] & 2) && (g.DispStat[0] & 0x10))
     {
         fr_hbl++; hbl_lines[vc]++;
@@ -192,7 +214,12 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
         {
             (eng ? fr_drB : fr_drA)++;
             a.lastnew = val; a.lastline = line;
-            if (!eng && b2) { lr_t = t; lr_val = cur; lr_seq = ++seq; }
+            if (!eng && b2)
+            {
+                lr_t = t; lr_val = cur; lr_seq = ++seq;
+                bare_finish();
+                pr_active = true; pr_pc = c.pc; pr_line = line; pr_t = t;
+            }
             cls = b2 ? "read-b2" : "read";
         }
         else
@@ -202,6 +229,7 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
             if (b2)
             {
                 bool rmw = !eng && lr_seq > lw_seq && t - lr_t <= 2;
+                if (!eng && rmw) pr_active = false;
                 if (eng) { cls = "write-b2"; }
                 else if (rmw && !((cur ^ lr_val) & 0x30000)) { a.rmw++; if (win) a.win_rmw++; cls = "rmw"; }
                 else if (rmw) { a.rmwmode++; if (win) a.win_rmwmode++; cls = "rmw-mode"; }
@@ -346,6 +374,11 @@ void finish(NDS& nds)
                          i ? "," : "", e.frame, e.line, e.eng ? 'B' : 'A', e.write ? "w" : "r", e.size, e.off, e.pc, ctxname(e.ctx), e.oldv, e.newv, e.cls);
         }
     };
+    std::fprintf(j, "],\n\"bare_reads\": [");
+    bare_finish();
+    { bool f = true; for (auto& [pc, b] : bare) { std::string code; for (u32 a = (pc & ~3u) - 0x20; a < (pc & ~3u) + 0x40; a += 4) { char w[12]; std::snprintf(w, sizeof w, "%08x", read9(nds, a)); code += w; code += ' '; }
+        std::fprintf(j, "%s\n {\"code_at_pc_minus_20\": \"%s\", \"pc\": \"%08x\", \"n\": %llu, \"win\": %llu, \"b0_35\": %llu, \"b36_191\": %llu, \"b192_260\": %llu, \"b261_262\": %llu}",
+        f ? "" : ",", code.c_str(), pc, (unsigned long long)b.n, (unsigned long long)b.win, (unsigned long long)b.b[0], (unsigned long long)b.b[1], (unsigned long long)b.b[2], (unsigned long long)b.b[3]); f = false; } }
     evs("dispcnt_window_events", winev);
     evs("dispcnt_mode_events", modeev);
     std::fprintf(j, "],\n\"regwrites\": [");
