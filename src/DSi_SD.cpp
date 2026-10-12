@@ -35,6 +35,10 @@ using namespace Platform;
 
 // Headless runner: --trace-sd prints SD/SDIO commands and error IRQs.
 bool SDTrace = false;
+u64 SDLastCmdTs = 0;
+// headless runner --sd-cmd-busy N: SD/MMC CMD_BUSY lasts N ARM7 cycles (-1: the SD clock model)
+long SDCmdBusyCycles = -1; // --trace-sd: ARM7 time of the last SD/MMC command write
+static bool SDStatusSeen = true;
 
 // observed IRQ behavior during transfers
 //
@@ -354,6 +358,13 @@ void DSi_SDHost::SendResponse(u32 val, bool last)
     if (last) SetIRQ(0);
 }
 
+void DSi_SDHost::TraceState(char* buf, int len) const
+{
+    snprintf(buf, len, "if %08x ie~ %08x d32irq %04x datactl %04x mode %u blk16 %u blk32 %u blkint %u fifo16 %u/%u fifo32 %u cmd %04x busyuntil %llu",
+             IRQStatus, IRQMask, Data32IRQ, DataCtl, DataMode, BlockCount16, BlockCount32, BlockCountInternal,
+             DataFIFO[0].Level(), DataFIFO[1].Level(), DataFIFO32.Level(), Command, (unsigned long long)CmdBusyUntil);
+}
+
 void DSi_SDHost::FinishRX(u32 param)
 {
     CheckSwapFIFO();
@@ -570,6 +581,12 @@ u16 DSi_SDHost::Read(u32 addr)
             // waits to see CMD_BUSY before it returns
             if (DSi.ARM7Timestamp < CmdBusyUntil)
                 ret |= 0x4000;
+            if (SDTrace && !Num && !SDStatusSeen)
+            {
+                SDStatusSeen = true;
+                fprintf(stderr, "[sd] SDMMC first STATUS1 read %+lld after cmd: %04x pc %08x\n",
+                        (long long)(DSi.ARM7Timestamp - SDLastCmdTs), ret, DSi.ARM7.R[15]);
+            }
             return ret;
         }
     case 0x020: return IRQMask & 0x031D;
@@ -661,11 +678,12 @@ void DSi_SDHost::Write(u32 addr, u16 val)
             if (SDTrace)
                 fprintf(stderr, "[sd] %s cmd %04x arg %08x port %u ts %llu pc %08x\n", Num ? "SDIO" : "SDMMC", val, Param, PortSelect & 1,
                         (unsigned long long)DSi.ARM7Timestamp, DSi.ARM7.R[15]);
+            if (SDTrace && !Num) { SDLastCmdTs = DSi.ARM7Timestamp; SDStatusSeen = false; }
 
             // ~48-bit command + 48-bit response, at the SD clock (HCLK/2 .. HCLK/512)
             u32 clkdiv = 2;
             for (u32 b = SDClock & 0xFF; b; b >>= 1) clkdiv <<= 1;
-            CmdBusyUntil = DSi.ARM7Timestamp + 96 * clkdiv;
+            CmdBusyUntil = DSi.ARM7Timestamp + ((SDCmdBusyCycles >= 0 && !Num) ? (u64)SDCmdBusyCycles : 96 * clkdiv);
 
             DSi_SDDevice* dev = Ports[PortSelect & 0x1].get();
             if (dev)

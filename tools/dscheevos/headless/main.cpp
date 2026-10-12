@@ -60,7 +60,7 @@ void hl_signal_stop() { hl::stopped = true; }
 // (its VBlank call and its idle work) and whether the game reached idle (see
 // ARMv5::ProfileInstr). Counting starts at the first VBlank after the game's
 // first OS_Halt call.
-namespace melonDS { extern bool SDTrace; }
+namespace melonDS { extern bool SDTrace; extern long SDCmdBusyCycles; }
 namespace prof
 {
 NDS* nds = nullptr;
@@ -305,6 +305,8 @@ static void usage()
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
         "  --watch-write ADDR:SIZE  DSi mode: print bus writes (CPU or DMA) to [ADDR, ADDR+SIZE) with the\n"
         "                       frame and the CPU's PC (first 40; the count at exit)\n"
+        "  --sd-cmd-busy N      DSi SD/MMC: CMD_BUSY reads as set for N ARM7 cycles after a command\n"
+        "                       (default: ~96 SD clocks; 0 = never seen, as when an IRQ delays the poll)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -354,6 +356,7 @@ int main(int argc, char** argv)
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
+        else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -558,7 +561,18 @@ int main(int argc, char** argv)
         nds->SetKeyMask(~held & 0xFFF);
         hl::frame = f;
         if (sdtracefrom >= 0 && f >= sdtracefrom && !melonDS::SDTrace) { melonDS::SDTrace = true; std::fprintf(stderr, "[sd] trace from frame %ld\n", f); }
-        if (melonDS::SDTrace) std::fprintf(stderr, "[sd] frame %ld ts %llu\n", f, (unsigned long long)nds->ARM7Timestamp);
+        if (melonDS::SDTrace)
+        {
+            std::fprintf(stderr, "[sd] frame %ld ts %llu arm7 pc %08x lr %08x sp %08x cpsr %08x ie %08x if %08x ime %u\n", f, (unsigned long long)nds->ARM7Timestamp,
+                         nds->ARM7.R[15], nds->ARM7.R[14], nds->ARM7.R[13], nds->ARM7.CPSR, nds->IE[1], nds->IF[1], nds->IME[1]);
+            if (dsi)
+            {
+                auto* d = static_cast<melonDS::DSi*>(nds.get());
+                char b[256];
+                d->SDMMC.TraceState(b, sizeof b); std::fprintf(stderr, "[sd]   SDMMC %s ie2 %08x if2 %08x\n", b, d->IE2, d->IF2);
+                for (int c = 4; c < 8; c++) { d->NDMAs[c].TraceState(b, sizeof b); std::fprintf(stderr, "[sd]   NDMA7.%d %s\n", c - 4, b); }
+            }
+        }
         nds->RunFrame();
         if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
             std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],

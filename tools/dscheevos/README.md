@@ -27,7 +27,9 @@ DS mode works without any console files (melonDS's free BIOS). DSi mode needs yo
 
 `--profile-pcs FILE` (with `--profile` and the cache model) writes, once the profile ends, the module's VBlank call by PC (cycles, runs, I-cache misses, D-cache read and write misses) and its data misses and uncached accesses by address (`ARMv5::ProfPCs` and `ProfDMiss`, filled in `ProfileInstr` and the cache model).
 
-`--trace-sd FRAME` prints, from that frame on, every SD/SDIO command (host, command word, argument, ARM7 timestamp and PC) and error IRQ (`src/DSi_SD.cpp`), every IPC sync send from either CPU (`src/NDS.cpp`) and, with `--watch-write`, every watched write with its timestamp, all on stderr (the global `melonDS::SDTrace`).
+`--trace-sd FRAME` prints, from that frame on, every SD/SDIO command (host, command word, argument, ARM7 timestamp and PC) and error IRQ (`src/DSi_SD.cpp`), every IPC sync send from either CPU (`src/NDS.cpp`) and, with `--watch-write`, every watched write with its timestamp, all on stderr (the global `melonDS::SDTrace`). Per frame it also prints the ARM7's PC, LR, CPSR and IRQ registers, the SD/MMC controller's state and the ARM7 NDMA channels, and after each SD/MMC command any ARM7 IRQ taken within 4,000 cycles and when the first status read came.
+
+`--sd-cmd-busy N` makes SD/MMC CMD_BUSY read as set for N ARM7 cycles after a command instead of about 96 SD clocks (`melonDS::SDCmdBusyCycles`). 0 means software never sees it, as when an IRQ runs between the command write and the first status read: nds-bootstrap's non-blocking NDMA read used to wait for CMD_BUSY forever then.
 
 ## DSi direct boot fix
 

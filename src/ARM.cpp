@@ -31,6 +31,8 @@
 
 namespace melonDS
 {
+extern bool SDTrace;
+extern u64 SDLastCmdTs;
 using Platform::Log;
 using Platform::LogLevel;
 
@@ -537,6 +539,10 @@ void ARM::TriggerIRQ()
     R_IRQ[2] = oldcpsr;
     R[14] = R[15] + (oldcpsr & 0x20 ? 2 : 0);
     JumpTo(ExceptionBase + 0x18);
+
+    if (Num == 1 && SDTrace && NDS.ARM7Timestamp - SDLastCmdTs < 4000)
+        fprintf(stderr, "[irq7] %+lld after SD cmd, IE&IF %08x, from pc %08x\n",
+                (long long)(NDS.ARM7Timestamp - SDLastCmdTs), NDS.IE[1] & NDS.IF[1], R_IRQ[2] & 0x20 ? R[14] - 2 : R[14] - 4);
 
     // ARDS cheat support
     // normally, those work by hijacking the ARM7 VBlank handler

@@ -20,6 +20,7 @@
 #define DSI_NDMA_H
 
 #include "types.h"
+#include <cstdio>
 #include "Savestate.h"
 
 namespace melonDS
@@ -50,6 +51,8 @@ public:
     }
 
     bool IsRunning() const { return Running!=0; }
+    // headless runner --trace-sd
+    void TraceState(char* buf, int len) const { snprintf(buf, len, "cnt %08x mode %02x run %u inprog %d rem %u totrem %u dst %08x", Cnt, StartMode, Running, InProgress, RemCount, TotalRemCount, CurDstAddr); }
 
     void StartIfNeeded(u32 mode)
     {

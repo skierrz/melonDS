@@ -121,6 +121,9 @@ public:
     void UpdateFIFO32();
     void CheckSwapFIFO();
 
+    // headless runner --trace-sd: controller state as text
+    void TraceState(char* buf, int len) const;
+
 private:
     melonDS::DSi& DSi;
     u32 Num;
