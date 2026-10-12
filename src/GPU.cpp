@@ -1291,6 +1291,9 @@ void GPU::StartScanline(u32 line) noexcept
         DispStat[0] |= (1<<0);
         DispStat[1] |= (1<<0);
 
+        if (NDS.ARM9.ProfOn && NDS.ARM9.ProfVBlank)
+            NDS.ARM9.ProfVBlank(NDS.ARM9);
+
         NDS.StopDMAs(0, 0x04);
 
         NDS.CheckDMAs(0, 0x01);

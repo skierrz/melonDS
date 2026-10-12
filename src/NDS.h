@@ -272,6 +272,11 @@ public: // TODO: Encapsulate the rest of these members
     u32 NumLagFrames;
     bool LagFrameFlag;
 
+    // Optional write watch (DSi bus writes only; off unless a frontend sets
+    // WatchHook): called for every ARM9/ARM7 bus write in [WatchLo, WatchLo + WatchSize).
+    u32 WatchLo = 0, WatchSize = 0;
+    void (*WatchHook)(NDS& nds, int cpu, u32 addr, u32 val, int size) = nullptr;
+
     // no need to worry about those overflowing, they can keep going for atleast 4350 years
     u64 ARM9Timestamp, ARM9Target;
     u64 ARM7Timestamp, ARM7Target;

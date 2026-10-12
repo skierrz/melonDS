@@ -657,6 +657,7 @@ void ARMv5::Execute()
         else
 #endif
         {
+            const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
@@ -698,6 +699,9 @@ void ARMv5::Execute()
                     AddCycles_C();
             }
 
+            if (ProfOn)
+                ProfileInstr(profaddr, profcpsr);
+
             // TODO optimize this shit!!!
             if (Halted)
             {
@@ -723,6 +727,41 @@ void ARMv5::Execute()
     if (Halted == 2)
         Halted = 0;
 }
+
+// Profile (see ARM.h). Runs after each interpreted instruction; Cycles
+// still holds what that instruction cost. R[13] is the SP of the mode the
+// instruction ran in unless it changed mode, which the module's entry stubs
+// don't do.
+void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
+{
+    const u64 c = (u64)Cycles << (2 - NDS.ARM9ClockShift);
+    const bool irq = (cpsr & 0x1F) == 0x12;
+    const bool in = addr >= ProfLo && addr < ProfHi;
+    const bool vbl = in && ((addr >= ProfVBlankLo && addr < ProfVBlankHi)
+                            || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
+    Prof.Busy += c;
+    if (in)
+    {
+        if (vbl) Prof.VBlank += c;
+        else     Prof.Idle += c;
+        if (irq) Prof.IRQMode += c;
+    }
+    if (!irq && !vbl)
+    {
+        if (in ? !ProfInIdle : Halted == 1)
+            Prof.IdleArrivals++;
+        ProfInIdle = in;
+    }
+    else if (irq)
+        ProfInIdle = false;     // returning from an IRQ into idle code counts as arriving
+    // the game's OS_Halt: its jump into the module, or the stock SDK code
+    // (mov r0, #0; mcr p15, 0, r0, c7, c0, 4; bx lr)
+    if (!(cpsr & 0x20) && (ProfHaltEntry ? addr == ProfHaltEntry
+            : CurInstr == 0xEE070F90 && ProfPrevInstr == 0xE3A00000 && NextInstr[0] == 0xE12FFF1E))
+        Prof.Halts++;
+    ProfPrevInstr = CurInstr;
+}
+
 template void ARMv5::Execute<CPUExecuteMode::Interpreter>();
 template void ARMv5::Execute<CPUExecuteMode::InterpreterGDB>();
 #ifdef JIT_ENABLED

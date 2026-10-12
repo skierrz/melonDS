@@ -55,6 +55,119 @@ int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) :
 
 void hl_signal_stop() { hl::stopped = true; }
 
+// --profile: per VBlank interval, ARM9 cycles inside the DScheevos module
+// (its VBlank call and its idle work) and whether the game reached idle (see
+// ARMv5::ProfileInstr). Counting starts at the first VBlank after the game's
+// first OS_Halt call.
+namespace prof
+{
+NDS* nds = nullptr;
+u32 base = 0x02D80000;      // DSCM_BASE (dscheevos/module/module.ld)
+long stopafter = -1;        // --profile-frames
+FILE* log = nullptr;        // --profile-log
+long startframe = -1;       // frame of the game's first OS_Halt call
+u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0;
+u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0;
+bool done = false;
+bool cachefromgame = false; // --cache-model-from-game
+
+static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->MainRAMMask & ~3u], 4); return v; }
+
+// The module header (dscheevos/module/src/start.s): magic, version, image
+// size, init, VBlank entry (0x10), halt entry (0x14, right after the VBlank
+// entry stub). Stacks from module.ld: idle on base+0x200000 down, the VBlank
+// call 0x2000 below that, down towards the image.
+static void find_module(ARMv5& cpu)
+{
+    u32 size = ram32(base + 8), vblank = ram32(base + 0x10), halt = ram32(base + 0x14);
+    if (ram32(base) == 0x56435344 && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
+        && vblank >= base && vblank < halt)
+    {
+        cpu.ProfLo = base; cpu.ProfHi = base + size; cpu.ProfHaltEntry = halt;
+        cpu.ProfVBlankLo = vblank; cpu.ProfVBlankHi = halt;
+        cpu.ProfIrqStackLo = base + size; cpu.ProfIrqStackHi = base + 0x200000 - 0x2000;
+    }
+    else
+        cpu.ProfLo = cpu.ProfHi = cpu.ProfHaltEntry = cpu.ProfVBlankLo = cpu.ProfVBlankHi = cpu.ProfIrqStackLo = cpu.ProfIrqStackHi = 0;
+}
+
+static void on_vblank(ARMv5& cpu)
+{
+    auto& p = cpu.Prof;
+    if (startframe < 0)
+    {
+        before += p.VBlank + p.Idle;
+        if (p.Halts)
+        {
+            startframe = hl::frame;
+            if (cachefromgame)
+            {
+                cpu.CacheModelReset();
+                cpu.CacheModel = true;
+            }
+        }
+    }
+    else if (!done)
+    {
+        n++;
+        vbl += p.VBlank; vblmax = std::max(vblmax, p.VBlank);
+        idle += p.Idle; idlemax = std::max(idlemax, p.Idle);
+        irqmode += p.IRQMode;
+        busy += p.Busy;
+        bool lagged = p.IdleArrivals == 0;
+        if (lagged) { lag++; maxlagrun = std::max(maxlagrun, ++lagrun); }
+        else lagrun = 0;
+        if (log)
+            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
+                         (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged);
+        if (stopafter >= 0 && (long)n >= stopafter)
+            done = true;
+    }
+    p.VBlank = p.Idle = p.IRQMode = p.Busy = 0;
+    p.IdleArrivals = 0;
+    find_module(cpu);
+}
+
+static void report(NDS& nds)
+{
+    // counted in 133 MHz units; print cycles at the clock in use
+    int shift = 2 - nds.ARM9ClockShift;
+    double frame = 560190.0 * 4;
+    auto cyc = [&](double v) { return v / (1 << shift); };
+    auto pct = [&](double v) { return 100.0 * v / frame; };
+    std::fprintf(stderr, "[prof] ARM9 at %d MHz, cache model %s\n", nds.ARM9ClockShift == 2 ? 133 : 67, nds.ARM9.CacheModel ? "on" : "off");
+    if (nds.ARM9.ProfHaltEntry)
+        std::fprintf(stderr, "[prof] module %08x-%08x, VBlank entry %08x, OS_Halt -> %08x\n", nds.ARM9.ProfLo, nds.ARM9.ProfHi,
+                     nds.ARM9.ProfVBlankLo, nds.ARM9.ProfHaltEntry);
+    else
+        std::fprintf(stderr, "[prof] no module, stock OS_Halt\n");
+    if (startframe < 0 || !n)
+    {
+        std::fprintf(stderr, "[prof] the game never called OS_Halt\n");
+        return;
+    }
+    std::fprintf(stderr, "[prof] game from frame %ld: %llu intervals, module before it %.0f cycles\n", startframe, (unsigned long long)n, cyc(before));
+    std::fprintf(stderr, "[prof] module VBlank call cycles/interval: avg %.0f (%.2f%%) max %.0f (%.2f%%)\n",
+                 cyc((double)vbl / n), pct((double)vbl / n), cyc(vblmax), pct(vblmax));
+    std::fprintf(stderr, "[prof] module idle cycles/interval: avg %.0f (%.2f%%) max %.0f (%.2f%%)\n",
+                 cyc((double)idle / n), pct((double)idle / n), cyc(idlemax), pct(idlemax));
+    std::fprintf(stderr, "[prof] module cycles in CPSR IRQ mode/interval: avg %.0f (%.2f%%)\n",
+                 cyc((double)irqmode / n), pct((double)irqmode / n));
+    std::fprintf(stderr, "[prof] ARM9 busy: avg %.1f%% of a frame\n", pct((double)busy / n));
+    std::fprintf(stderr, "[prof] lag: %llu of %llu intervals (%.2f%%), longest run %llu\n", (unsigned long long)lag,
+                 (unsigned long long)n, 100.0 * lag / n, (unsigned long long)maxlagrun);
+}
+}
+
+// --watch-write: bus writes to a main RAM range (the first 40 printed, all counted)
+static unsigned long g_watchcount = 0;
+static void watch_write(NDS& nds, int cpu, u32 addr, u32 val, int size)
+{
+    if (g_watchcount++ < 40)
+        std::printf("[watch] frame %ld ARM%d pc=%08x lr=%08x write%d %08x = %0*x\n", hl::frame, cpu ? 7 : 9,
+                    cpu ? nds.ARM7.R[15] : nds.ARM9.R[15], cpu ? nds.ARM7.R[14] : nds.ARM9.R[14], size * 8, addr, size * 2, val);
+}
+
 // --trace-led: every write to BPTWL[30h] (the DSi's Wi-Fi LED)
 static void trace_led(u8 reg, u8 val)
 {
@@ -155,6 +268,17 @@ static void usage()
         "  --cache-model        time ARM9 cache hits/misses instead of melonDS's flat cache cost\n"
         "  --rtc TIME           console clock at boot: \"host\" (default, the host's local time),\n"
         "                       or YYYY-MM-DDTHH:MM:SS\n"
+        "  --profile            count ARM9 cycles in the DScheevos module (its VBlank call, its idle work,\n"
+        "                       and CPSR IRQ mode) and lag intervals (VBlank to VBlank, the game never\n"
+        "                       reached idle); summary at exit\n"
+        "  --module-base ADDR   module address for --profile (default 0x02D80000)\n"
+        "  --profile-frames N   with --profile: stop N VBlanks after the game's first OS_Halt call\n"
+        "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
+        "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
+        "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
+        "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
+        "  --watch-write ADDR:SIZE  DSi mode: print bus writes (CPU or DMA) to [ADDR, ADDR+SIZE) with the\n"
+        "                       frame and the CPU's PC (first 40; the count at exit)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -165,6 +289,8 @@ int main(int argc, char** argv)
     std::vector<u8> wpapmk;
     long tracepc = -1;
     bool traceled = false;
+    bool profile = false, scriptfromgame = false;
+    std::string proflog, watch;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
     std::vector<std::string> guestargs;
@@ -192,6 +318,13 @@ int main(int argc, char** argv)
         else if (a == "--cache-model") cachemodel = true;
         else if (a == "--rtc") rtc = next();
         else if (a == "--net") net = true;
+        else if (a == "--watch-write") watch = next();
+        else if (a == "--profile") profile = true;
+        else if (a == "--module-base") prof::base = std::stoul(next(), nullptr, 0);
+        else if (a == "--profile-frames") prof::stopafter = std::stol(next());
+        else if (a == "--profile-log") proflog = next();
+        else if (a == "--script-from-game") scriptfromgame = true;
+        else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -315,6 +448,19 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
+    if (profile)
+    {
+        prof::nds = nds.get();
+        nds->ARM9.ProfOn = true;
+        nds->ARM9.ProfVBlank = prof::on_vblank;
+        if (!proflog.empty())
+        {
+            prof::log = std::fopen(proflog.c_str(), "w");
+            if (!prof::log) { std::fprintf(stderr, "cannot write %s\n", proflog.c_str()); return 2; }
+            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag\n");
+        }
+    }
+    if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
 
     melonDS::Net netstack;
     if (net)
@@ -353,17 +499,28 @@ int main(int argc, char** argv)
     DSi_NWifi* nwifi = dsi ? dynamic_cast<DSi_NWifi*>(static_cast<DSi*>(nds.get())->SDIO.Port(0)) : nullptr;
     if (nwifi && net && wpapmk.size() == 32 && wpassid == "melonAP")
         nwifi->EnableWPA2(wpapmk.data());
+    if (dsi && !watch.empty())
+    {
+        size_t colon = watch.find(':');
+        if (colon == std::string::npos) usage();
+        nds->WatchLo = std::stoul(watch.substr(0, colon), nullptr, 0);
+        nds->WatchSize = std::stoul(watch.substr(colon + 1), nullptr, 0);
+        nds->WatchHook = watch_write;
+    }
     if (dsi && traceled)
         static_cast<DSi*>(nds.get())->I2C.GetBPTWL()->WriteHook = trace_led;
 
     long f = 0;
-    for (; f < frames && !hl::hit_until && !hl::stopped; f++)
+    for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
         u32 held = keys;
+        // script time: frames since boot, or since the game's first OS_Halt call
+        long st = !scriptfromgame ? f : prof::startframe >= 0 ? f - prof::startframe : -1;
         for (auto& p : script)
         {
-            if (!p.wifidrop && !p.wifirekey && f >= p.frame && f < p.frame + p.hold) held |= p.keys;
-            if ((p.wifidrop || p.wifirekey) && f == p.frame && nwifi)
+            if (st < 0) break;
+            if (!p.wifidrop && !p.wifirekey && st >= p.frame && st < p.frame + p.hold) held |= p.keys;
+            if ((p.wifidrop || p.wifirekey) && st == p.frame && nwifi)
             {
                 if (p.wifidrop) nwifi->DropConnection();
                 else nwifi->StartGroupRekey();
@@ -391,15 +548,22 @@ int main(int argc, char** argv)
         FILE* df = std::fopen(dumppath.c_str(), "wb");
         if (df) { std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, df); std::fclose(df); }
     }
-    if (cachemodel)
+    if (nds->ARM9.CacheModel)
     {
         auto& c = nds->ARM9.CacheStats;
         std::fprintf(stderr, "[cache] I hit %llu miss %llu | D read hit %llu miss %llu | D write hit %llu miss %llu | writebacks %llu\n",
             (unsigned long long)c.IHit, (unsigned long long)c.IMiss, (unsigned long long)c.DReadHit, (unsigned long long)c.DReadMiss,
             (unsigned long long)c.DWriteHit, (unsigned long long)c.DWriteMiss, (unsigned long long)c.DWriteBack);
     }
+    if (nds->WatchHook)
+        std::printf("[watch] %lu writes\n", g_watchcount);
+    if (profile)
+    {
+        prof::report(*nds);
+        if (prof::log) std::fclose(prof::log);
+    }
     g_net = nullptr;
     std::fprintf(stderr, "[runner] %ld frames, %s\n", f,
-                 hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : "frame limit");
+                 hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : prof::done ? "profile frames done" : "frame limit");
     return hl::hit_until || hl::until.empty() ? 0 : 1;
 }

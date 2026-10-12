@@ -336,6 +336,33 @@ public:
     void CacheModelDInvalidateAll();
     s32 DataCacheCycles(u32 addr, bool write, bool seq, s32 table);
 
+    // Optional profile (off by default; a frontend sets ProfOn and the
+    // module's addresses). Per VBlank interval: ARM9 cycles with the PC in
+    // the module [ProfLo, ProfHi), split by context: the VBlank call (PC in
+    // [ProfVBlankLo, ProfVBlankHi), the entry stub, or SP on the module's IRQ
+    // stack [ProfIrqStackLo, ProfIrqStackHi]) and everything else (the idle
+    // thread); module cycles in CPSR IRQ mode, whatever the context; and how
+    // often the game's idle thread arrived at idle. An arrival is a halt
+    // outside IRQ mode and outside the VBlank call, or reaching module idle
+    // code from anywhere else (OS_Halt's jump, or an IRQ returning into
+    // preempted idle work). Cycles are in 133 MHz units, whatever the clock.
+    struct ProfileStats
+    {
+        u64 VBlank, Idle, IRQMode, Busy;   // this interval
+        u32 IdleArrivals;                  // this interval
+        u32 Halts;                         // game OS_Halt calls seen (all time)
+    };
+    bool ProfOn = false;
+    u32 ProfLo = 0, ProfHi = 0;            // module image
+    u32 ProfVBlankLo = 0, ProfVBlankHi = 0;
+    u32 ProfIrqStackLo = 0, ProfIrqStackHi = 0;
+    u32 ProfHaltEntry = 0;                 // module entry that OS_Halt jumps to (0: none)
+    ProfileStats Prof {};
+    bool ProfInIdle = false;               // last instruction outside IRQ mode was module idle code
+    u32 ProfPrevInstr = 0;
+    void (*ProfVBlank)(ARMv5& cpu) = nullptr;  // called at the start of each VBlank
+    void ProfileInstr(u32 addr, u32 cpsr);
+
     void CP15Write(u32 id, u32 val);
     u32 CP15Read(u32 id) const;
 

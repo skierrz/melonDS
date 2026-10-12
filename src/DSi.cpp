@@ -1663,6 +1663,7 @@ u32 DSi::ARM9Read32(u32 addr)
 
 void DSi::ARM9Write8(u32 addr, u8 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 0, addr, val, 1);
     assert(ConsoleType == 1);
     switch (addr & 0xFF000000)
     {
@@ -1758,6 +1759,7 @@ void DSi::ARM9Write8(u32 addr, u8 val)
 
 void DSi::ARM9Write16(u32 addr, u16 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 0, addr, val, 2);
     assert(ConsoleType == 1);
     addr &= ~0x1;
 
@@ -1843,6 +1845,7 @@ void DSi::ARM9Write16(u32 addr, u16 val)
 
 void DSi::ARM9Write32(u32 addr, u32 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 0, addr, val, 4);
     assert(ConsoleType == 1);
     addr &= ~0x3;
 
@@ -2143,6 +2146,7 @@ u32 DSi::ARM7Read32(u32 addr)
 
 void DSi::ARM7Write8(u32 addr, u8 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 1, addr, val, 1);
     assert(ConsoleType == 1);
     switch (addr & 0xFF800000)
     {
@@ -2231,6 +2235,7 @@ void DSi::ARM7Write8(u32 addr, u8 val)
 
 void DSi::ARM7Write16(u32 addr, u16 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 1, addr, val, 2);
     assert(ConsoleType == 1);
     addr &= ~0x1;
 
@@ -2321,6 +2326,7 @@ void DSi::ARM7Write16(u32 addr, u16 val)
 
 void DSi::ARM7Write32(u32 addr, u32 val)
 {
+    if (WatchHook && addr - WatchLo < WatchSize) WatchHook(*this, 1, addr, val, 4);
     assert(ConsoleType == 1);
     addr &= ~0x3;
 
