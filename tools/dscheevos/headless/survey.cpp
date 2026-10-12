@@ -68,6 +68,8 @@ struct DAgg
     long first = -1, last = -1;
     // writes touching byte 2: pure RMW (mode bits as read), RMW changing the mode, absolute
     u64 rmw = 0, rmwmode = 0, abs = 0, win_rmw = 0, win_rmwmode = 0, win_abs = 0;
+    // the same, only while the strip could be live (engine A mode 1 at line 0 for >= 30 frames)
+    u64 live_win = 0, live_rmw = 0, live_rmwmode = 0, live_abs = 0;
     u64 modechg = 0, modechg_outvbl = 0;
     u32 lastold = 0, lastnew = 0, lastline = 0;
     std::array<u64, 263> lines{};
@@ -78,19 +80,24 @@ static u32 dpre[2];
 static long lr_t = -1; static u32 lr_val = 0; static u64 lr_seq = 0, lw_seq = 0, seq = 0;
 // a DISPCNT A read covering byte 2 that no RMW write follows within 2 lines:
 // a bare read (the value went somewhere else, e.g. GX_DispOff-style saves)
+static long mode1_run = 0, live_frames = 0;
+static bool live() { return mode1_run >= 30; }
+static bool pr_live = false;
 static bool pr_active = false; static u32 pr_pc = 0, pr_line = 0; static long pr_t = 0;
-struct BAgg { u64 n = 0, win = 0, b[4] = {}; };
+struct BAgg { u64 n = 0, win = 0, livewin = 0, b[4] = {}; };
 static std::map<u32, BAgg> bare;
 static void bare_finish()
 {
     if (!pr_active) return;
     auto& b = bare[pr_pc];
     b.n++; b.b[bucket(pr_line)]++;
-    if (in_window(pr_line)) b.win++;
+    if (in_window(pr_line)) { b.win++; if (pr_live) b.livewin++; }
     pr_active = false;
 }
 struct WinEv { long frame; u32 line; int eng, write, size, off; u32 pc; int ctx; u32 oldv, newv; const char* cls; };
-static std::vector<WinEv> winev;            // first 400 DISPCNT accesses in the window
+static std::vector<WinEv> winev;            // first 100 DISPCNT reads and 300 writes in the window
+static int winev_r = 0, winev_w = 0;
+static std::vector<WinEv> liveev;           // first 300 live non-RMW byte-2 writes to DISPCNT A in the window
 static std::vector<WinEv> modeev;           // first 200 DISPCNT A mode changes
 
 // ---- display register writes: per (addr, pc, ctx) line histogram ----
@@ -165,6 +172,8 @@ static void on_line(NDS& nds, u32 vc)
             std::fprintf(csv, ",%d,%d,%s,%d,%d,%d,%d\n", fr_hbl, fr_hbl_win, v.c_str(), fr_dwA, fr_drA, fr_dwB, fr_drB);
         }
         frame++;
+        if (((g.GPU2D_A.DispCnt >> 16) & 3) == 1) mode1_run++; else mode1_run = 0;
+        if (live()) live_frames++;
         fr_hbl = fr_hbl_win = 0; fr_vc.clear(); fr_dwA = fr_drA = fr_dwB = fr_drB = 0;
         u16 pow = nds.ARM9IORead16(0x04000304);
         if (csv)
@@ -207,6 +216,8 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
         a.last = frame;
         bool win = in_window(line);
         if (win) a.win++;
+        bool lv = win && live();
+        if (lv) a.live_win++;
         bool b2 = covers(addr, size, base + 2, base + 3);
         long t = frame * 263 + line;
         const char* cls = "";
@@ -218,7 +229,7 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
             {
                 lr_t = t; lr_val = cur; lr_seq = ++seq;
                 bare_finish();
-                pr_active = true; pr_pc = c.pc; pr_line = line; pr_t = t;
+                pr_active = true; pr_pc = c.pc; pr_line = line; pr_t = t; pr_live = live();
             }
             cls = b2 ? "read-b2" : "read";
         }
@@ -231,9 +242,11 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
                 bool rmw = !eng && lr_seq > lw_seq && t - lr_t <= 2;
                 if (!eng && rmw) pr_active = false;
                 if (eng) { cls = "write-b2"; }
-                else if (rmw && !((cur ^ lr_val) & 0x30000)) { a.rmw++; if (win) a.win_rmw++; cls = "rmw"; }
-                else if (rmw) { a.rmwmode++; if (win) a.win_rmwmode++; cls = "rmw-mode"; }
-                else { a.abs++; if (win) a.win_abs++; cls = "abs"; }
+                else if (rmw && !((cur ^ lr_val) & 0x30000)) { a.rmw++; if (win) a.win_rmw++; if (lv) a.live_rmw++; cls = "rmw"; }
+                else if (rmw) { a.rmwmode++; if (win) a.win_rmwmode++; if (lv) a.live_rmwmode++; cls = "rmw-mode"; }
+                else { a.abs++; if (win) a.win_abs++; if (lv) a.live_abs++; cls = "abs"; }
+                if (lv && !eng && std::strcmp(cls, "rmw") && liveev.size() < 300)
+                    liveev.push_back({frame, line, eng, 1, size, off, c.pc, c.ctx, dpre[eng], cur, cls});
                 if ((cur ^ dpre[eng]) & 0x30000)
                 {
                     a.modechg++;
@@ -246,7 +259,7 @@ static void on_io(NDS& nds, int kind, u32 addr, u32 val, int size)
             else cls = "write-lo";
             if (!eng) lw_seq = ++seq;
         }
-        if (win && winev.size() < 400)
+        if (win && (kind == 0 ? winev_r++ < 100 : winev_w++ < 300))
             winev.push_back({frame, line, eng, kind == 2, size, off, c.pc, c.ctx, kind == 2 ? dpre[eng] : 0, kind == 2 ? cur : val, cls});
         return;
     }
@@ -336,7 +349,7 @@ void finish(NDS& nds)
     sample_handler(nds);
     FILE* j = std::fopen(jsonpath.c_str(), "w");
     if (!j) return;
-    std::fprintf(j, "{\n\"frames\": %ld,\n\"ie_writes\": %llu,\n\"ie_abs\": %llu,\n", frame + 1,
+    std::fprintf(j, "{\n\"live_frames\": %ld,\n\"frames\": %ld,\n\"ie_writes\": %llu,\n\"ie_abs\": %llu,\n", live_frames, frame + 1,
                  (unsigned long long)ie_writes, (unsigned long long)ie_abs);
     std::fprintf(j, "\"ie_abs_pc\": {");
     { bool f = true; for (auto& [pc, n] : ie_abs_pc) { std::fprintf(j, "%s\"%08x\": %llu", f ? "" : ", ", pc, (unsigned long long)n); f = false; } }
@@ -354,11 +367,13 @@ void finish(NDS& nds)
         std::fprintf(j, "%s\n {\"eng\": \"%c\", \"op\": \"%s\", \"size\": %d, \"off\": %d, \"pc\": \"%08x\", \"ctx\": \"%s\", \"n\": %llu, "
                      "\"b0_35\": %llu, \"b36_191\": %llu, \"b192_260\": %llu, \"b261_262\": %llu, \"win\": %llu, \"first\": %ld, \"last\": %ld, "
                      "\"rmw\": %llu, \"rmw_mode\": %llu, \"abs\": %llu, \"win_rmw\": %llu, \"win_rmw_mode\": %llu, \"win_abs\": %llu, "
+                     "\"live_win\": %llu, \"live_rmw\": %llu, \"live_rmw_mode\": %llu, \"live_abs\": %llu, "
                      "\"modechg\": %llu, \"modechg_outvbl\": %llu, \"last_old\": \"%08x\", \"last_new\": \"%08x\", \"last_line\": %u, \"lines\": [",
                      f ? "" : ",", k.eng ? 'B' : 'A', k.write ? "w" : "r", k.size, k.off, k.pc, ctxname(k.ctx), (unsigned long long)a.n,
                      (unsigned long long)a.b[0], (unsigned long long)a.b[1], (unsigned long long)a.b[2], (unsigned long long)a.b[3],
                      (unsigned long long)a.win, a.first, a.last, (unsigned long long)a.rmw, (unsigned long long)a.rmwmode, (unsigned long long)a.abs,
                      (unsigned long long)a.win_rmw, (unsigned long long)a.win_rmwmode, (unsigned long long)a.win_abs,
+                     (unsigned long long)a.live_win, (unsigned long long)a.live_rmw, (unsigned long long)a.live_rmwmode, (unsigned long long)a.live_abs,
                      (unsigned long long)a.modechg, (unsigned long long)a.modechg_outvbl, a.lastold, a.lastnew, a.lastline);
         for (int i = 0; i < 263; i++) std::fprintf(j, "%s%llu", i ? "," : "", (unsigned long long)a.lines[i]);
         std::fprintf(j, "]}");
@@ -377,10 +392,11 @@ void finish(NDS& nds)
     std::fprintf(j, "],\n\"bare_reads\": [");
     bare_finish();
     { bool f = true; for (auto& [pc, b] : bare) { std::string code; for (u32 a = (pc & ~3u) - 0x20; a < (pc & ~3u) + 0x40; a += 4) { char w[12]; std::snprintf(w, sizeof w, "%08x", read9(nds, a)); code += w; code += ' '; }
-        std::fprintf(j, "%s\n {\"code_at_pc_minus_20\": \"%s\", \"pc\": \"%08x\", \"n\": %llu, \"win\": %llu, \"b0_35\": %llu, \"b36_191\": %llu, \"b192_260\": %llu, \"b261_262\": %llu}",
-        f ? "" : ",", code.c_str(), pc, (unsigned long long)b.n, (unsigned long long)b.win, (unsigned long long)b.b[0], (unsigned long long)b.b[1], (unsigned long long)b.b[2], (unsigned long long)b.b[3]); f = false; } }
+        std::fprintf(j, "%s\n {\"code_at_pc_minus_20\": \"%s\", \"pc\": \"%08x\", \"n\": %llu, \"win\": %llu, \"live_win\": %llu, \"b0_35\": %llu, \"b36_191\": %llu, \"b192_260\": %llu, \"b261_262\": %llu}",
+        f ? "" : ",", code.c_str(), pc, (unsigned long long)b.n, (unsigned long long)b.win, (unsigned long long)b.livewin, (unsigned long long)b.b[0], (unsigned long long)b.b[1], (unsigned long long)b.b[2], (unsigned long long)b.b[3]); f = false; } }
     evs("dispcnt_window_events", winev);
     evs("dispcnt_mode_events", modeev);
+    evs("dispcnt_live_bad_writes", liveev);
     std::fprintf(j, "],\n\"regwrites\": [");
     { bool f = true;
     for (auto& [k, r] : ragg)
