@@ -25,6 +25,10 @@ DS mode works without any console files (melonDS's free BIOS). DSi mode needs yo
 
 `--watch-write ADDR:SIZE` prints the bus writes (CPU or DMA) to a range in DSi mode, with the frame and the CPU's PC. The hook is in `DSi::ARM9Write*` and `DSi::ARM7Write*` (`NDS::WatchHook`), off unless set. Mirrors are separate addresses: main RAM written through 0x0C000000 needs its own watch.
 
+`--profile-pcs FILE` (with `--profile` and the cache model) writes, once the profile ends, the module's VBlank call by PC (cycles, runs, I-cache misses, D-cache read and write misses) and its data misses and uncached accesses by address (`ARMv5::ProfPCs` and `ProfDMiss`, filled in `ProfileInstr` and the cache model).
+
+`--trace-sd FRAME` prints, from that frame on, every SD/SDIO command (host, command word, argument, ARM7 timestamp and PC) and error IRQ (`src/DSi_SD.cpp`), every IPC sync send from either CPU (`src/NDS.cpp`) and, with `--watch-write`, every watched write with its timestamp, all on stderr (the global `melonDS::SDTrace`).
+
 ## DSi direct boot fix
 
 melonDS's DSi direct boot ignored the ROM header field (0x1B8) where a program asks for SD card access, so DSi homebrew such as nds-bootstrap couldn't see the SD card. The fix in `src/DSi.cpp` grants it when the header asks, as the DSi's own launcher does.

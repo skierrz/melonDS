@@ -60,6 +60,7 @@ void hl_signal_stop() { hl::stopped = true; }
 // (its VBlank call and its idle work) and whether the game reached idle (see
 // ARMv5::ProfileInstr). Counting starts at the first VBlank after the game's
 // first OS_Halt call.
+namespace melonDS { extern bool SDTrace; }
 namespace prof
 {
 NDS* nds = nullptr;
@@ -71,6 +72,9 @@ u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0;
 u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0;
 bool done = false;
 bool cachefromgame = false; // --cache-model-from-game
+std::string pcspath;        // --profile-pcs
+std::map<u32, ARMv5::ProfPCStat> pcs;
+std::map<u32, u64> dmiss;
 
 static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->MainRAMMask & ~3u], 4); return v; }
 
@@ -106,6 +110,7 @@ static void on_vblank(ARMv5& cpu)
                 cpu.CacheModelReset();
                 cpu.CacheModel = true;
             }
+            if (!pcspath.empty()) { cpu.ProfPCs = &pcs; cpu.ProfDMiss = &dmiss; cpu.ProfPrevStats = cpu.CacheStats; }
         }
     }
     else if (!done)
@@ -123,7 +128,10 @@ static void on_vblank(ARMv5& cpu)
                          (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged,
                          cpu.R[15], nds->ARM7.R[15], cpu.CPSR);
         if (stopafter >= 0 && (long)n >= stopafter)
+        {
             done = true;
+            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr;
+        }
     }
     p.VBlank = p.Idle = p.IRQMode = p.Busy = 0;
     p.IdleArrivals = 0;
@@ -176,6 +184,9 @@ static void watch_write(NDS& nds, int cpu, u32 addr, u32 val, int size)
     auto& w = g_watchers[{cpu, pc}];
     if (!w.n) { w.lo = w.hi = addr; w.first = hl::frame; }
     w.n++; w.lo = std::min(w.lo, addr); w.hi = std::max(w.hi, addr); w.last = hl::frame;
+    if (melonDS::SDTrace)
+        std::fprintf(stderr, "[watch] ARM%d pc=%08x write%d %08x = %0*x ts %llu\n", cpu ? 7 : 9, pc, size * 8, addr, size * 2, val,
+                     (unsigned long long)nds.ARM7Timestamp);
     if (g_watchcount++ < 40)
         std::printf("[watch] frame %ld ARM%d pc=%08x lr=%08x write%d %08x = %0*x\n", hl::frame, cpu ? 7 : 9,
                     pc, cpu ? nds.ARM7.R[14] : nds.ARM9.R[14], size * 8, addr, size * 2, val);
@@ -287,6 +298,8 @@ static void usage()
         "  --module-base ADDR   module address for --profile (default 0x02D80000)\n"
         "  --profile-frames N   with --profile: stop N VBlanks after the game's first OS_Halt call\n"
         "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
+        "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
+        "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
@@ -300,7 +313,7 @@ int main(int argc, char** argv)
 {
     std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath, wpaap, wpassid;
     std::vector<u8> wpapmk;
-    long tracepc = -1;
+    long tracepc = -1, sdtracefrom = -1;
     bool traceled = false;
     bool profile = false, scriptfromgame = false;
     std::string proflog, watch;
@@ -339,6 +352,8 @@ int main(int argc, char** argv)
         else if (a == "--profile-log") proflog = next();
         else if (a == "--script-from-game") scriptfromgame = true;
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
+        else if (a == "--profile-pcs") prof::pcspath = next();
+        else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -542,6 +557,8 @@ int main(int argc, char** argv)
         }
         nds->SetKeyMask(~held & 0xFFF);
         hl::frame = f;
+        if (sdtracefrom >= 0 && f >= sdtracefrom && !melonDS::SDTrace) { melonDS::SDTrace = true; std::fprintf(stderr, "[sd] trace from frame %ld\n", f); }
+        if (melonDS::SDTrace) std::fprintf(stderr, "[sd] frame %ld ts %llu\n", f, (unsigned long long)nds->ARM7Timestamp);
         nds->RunFrame();
         if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
             std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],
@@ -579,6 +596,21 @@ int main(int argc, char** argv)
     {
         prof::report(*nds);
         if (prof::log) std::fclose(prof::log);
+        if (!prof::pcspath.empty())
+        {
+            FILE* pf = std::fopen(prof::pcspath.c_str(), "w");
+            if (pf)
+            {
+                std::fprintf(pf, "kind,addr,count,cycles,imiss,dreadmiss,dwritemiss\n");
+                for (auto& [a, e] : prof::pcs)
+                    std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu\n", a, (unsigned long long)e.Count, (unsigned long long)e.Cycles,
+                                 (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss, (unsigned long long)e.DWriteMiss);
+                for (auto& [a, n] : prof::dmiss)
+                    std::fprintf(pf, "%s,%08x,%llu,,,,\n", (a & 2) ? ((a & 1) ? "uncached_w" : "uncached_r") : ((a & 1) ? "dmiss_w" : "dmiss_r"),
+                                 a & ~3u, (unsigned long long)n);
+                std::fclose(pf);
+            }
+        }
     }
     g_net = nullptr;
     std::fprintf(stderr, "[runner] %ld frames, %s\n", f,

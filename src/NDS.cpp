@@ -47,6 +47,7 @@
 
 namespace melonDS
 {
+extern bool SDTrace;
 using namespace Platform;
 
 const s32 kMaxIterationCycles = 64;
@@ -3316,6 +3317,7 @@ void NDS::ARM9IOWrite16(u32 addr, u16 val)
         return;
 
     case 0x04000180:
+        if (SDTrace) fprintf(stderr, "[ipc] ARM9 sync %04x (ARM7 irq en %d) ts %llu pc %08x\n", val, (IPCSync7 >> 14) & 1, (unsigned long long)ARM7Timestamp, ARM9.R[15]);
         IPCSync7 &= 0xFFF0;
         IPCSync7 |= ((val & 0x0F00) >> 8);
         IPCSync9 &= 0xB0FF;
@@ -3974,6 +3976,7 @@ void NDS::ARM7IOWrite16(u32 addr, u16 val)
     case 0x04000138: RTC.Write(val, false); return;
 
     case 0x04000180:
+        if (SDTrace && (val & 0x2000)) fprintf(stderr, "[ipc] ARM7 sync %04x ts %llu pc %08x\n", val, (unsigned long long)ARM7Timestamp, ARM7.R[15]);
         IPCSync9 &= 0xFFF0;
         IPCSync9 |= ((val & 0x0F00) >> 8);
         IPCSync7 &= 0xB0FF;

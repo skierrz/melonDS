@@ -740,6 +740,17 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     const bool vbl = in && ((addr >= ProfVBlankLo && addr < ProfVBlankHi)
                             || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
     Prof.Busy += c;
+    if (ProfPCs && in && vbl)
+    {
+        auto& e = (*ProfPCs)[addr];
+        e.Cycles += c; e.Count++;
+        e.IMiss += CacheStats.IMiss - ProfPrevStats.IMiss;
+        e.DReadMiss += CacheStats.DReadMiss - ProfPrevStats.DReadMiss;
+        e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
+        for (u32 i = 0; i < ProfPendN; i++) (*ProfDMiss)[ProfPend[i]]++;
+    }
+    ProfPendN = 0;
+    ProfPrevStats = CacheStats;
     if (in)
     {
         if (vbl) Prof.VBlank += c;

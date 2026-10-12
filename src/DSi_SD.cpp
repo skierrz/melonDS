@@ -33,6 +33,9 @@ using std::get_if;
 using std::get;
 using namespace Platform;
 
+// Headless runner: --trace-sd prints SD/SDIO commands and error IRQs.
+bool SDTrace = false;
+
 // observed IRQ behavior during transfers
 //
 // during reads:
@@ -288,6 +291,8 @@ void DSi_SDHost::ClearIRQ(u32 irq)
 
 void DSi_SDHost::SetIRQ(u32 irq)
 {
+    if (SDTrace && irq >= 16)
+        fprintf(stderr, "[sd] %s irq %u ts %llu\n", Num ? "SDIO" : "SDMMC", irq, (unsigned long long)DSi.ARM7Timestamp);
     u32 oldflags = IRQStatus & ~IRQMask;
 
     IRQStatus |= (1<<irq);
@@ -653,6 +658,9 @@ void DSi_SDHost::Write(u32 addr, u16 val)
         {
             Command = val;
             u8 cmd = Command & 0x3F;
+            if (SDTrace)
+                fprintf(stderr, "[sd] %s cmd %04x arg %08x port %u ts %llu pc %08x\n", Num ? "SDIO" : "SDMMC", val, Param, PortSelect & 1,
+                        (unsigned long long)DSi.ARM7Timestamp, DSi.ARM7.R[15]);
 
             // ~48-bit command + 48-bit response, at the SD clock (HCLK/2 .. HCLK/512)
             u32 clkdiv = 2;

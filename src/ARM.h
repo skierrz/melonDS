@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <map>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -362,6 +363,15 @@ public:
     u32 ProfPrevInstr = 0;
     void (*ProfVBlank)(ARMv5& cpu) = nullptr;  // called at the start of each VBlank
     void ProfileInstr(u32 addr, u32 cpsr);
+    // Optional, with the cache model: the VBlank call's instructions by PC
+    // (cycles, runs, I-cache misses, D-cache read/write misses) and its data
+    // misses by address (bit 0: write). A frontend sets the maps.
+    struct ProfPCStat { u64 Cycles, Count, IMiss, DReadMiss, DWriteMiss; };
+    std::map<u32, ProfPCStat>* ProfPCs = nullptr;
+    std::map<u32, u64>* ProfDMiss = nullptr;
+    u32 ProfPend[8] {};
+    u32 ProfPendN = 0;
+    CacheModelStats ProfPrevStats {};
 
     void CP15Write(u32 id, u32 val);
     u32 CP15Read(u32 id) const;
