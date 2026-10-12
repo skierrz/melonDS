@@ -314,6 +314,14 @@ static void usage()
         "                       frame and the CPU's PC (first 40; the count at exit)\n"
         "  --sd-cmd-busy N      DSi SD/MMC: CMD_BUSY reads as set for N ARM7 cycles after a command\n"
         "                       (default: ~96 SD clocks; 0 = never seen, as when an IRQ delays the poll)\n"
+        "  --trace-io FILE      CSV per frame (sampled after each frame): ARM9/ARM7 IME/IE/IF, ARM9 TIMER0,\n"
+        "                       engine B DISPCNT, BG3CNT, BG0-3 scroll, BLDCNT/BLDALPHA/BLDY, BG mosaic,\n"
+        "                       POWCNT1, SOUNDCNT, then the --trace-word words\n"
+        "  --trace-word ADDR    with --trace-io: also log this main-RAM word (repeatable)\n"
+        "  --poke FRAME:CPU:ADDR:VALUE:BITS  before FRAME runs, write VALUE through the ARM9 (CPU 9) or\n"
+        "                       ARM7 (CPU 7) bus, 8/16/32 bits (repeatable); e.g. stands in for a game\n"
+        "                       that set a write-only register once\n"
+        "  --dump-ram-at FRAME:FILE  write main RAM after FRAME (repeatable)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -329,6 +337,11 @@ int main(int argc, char** argv)
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
     std::vector<std::string> guestargs;
+    std::string traceio;
+    std::vector<u32> tracewords;
+    struct Poke { long frame; int cpu; u32 addr, val; int bits; };
+    std::vector<Poke> pokes;
+    std::vector<std::pair<long, std::string>> dumpsat;
     for (int i = 1; i < argc; i++)
     {
         std::string a = argv[i];
@@ -364,6 +377,20 @@ int main(int argc, char** argv)
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
+        else if (a == "--trace-io") traceio = next();
+        else if (a == "--trace-word") tracewords.push_back(std::stoul(next(), nullptr, 0));
+        else if (a == "--poke")
+        {
+            Poke p{};
+            if (std::sscanf(next().c_str(), "%ld:%d:%i:%i:%d", &p.frame, &p.cpu, (int*)&p.addr, (int*)&p.val, &p.bits) != 5) usage();
+            pokes.push_back(p);
+        }
+        else if (a == "--dump-ram-at")
+        {
+            std::string v = next(); size_t c = v.find(':');
+            if (c == std::string::npos) usage();
+            dumpsat.push_back({std::stol(v.substr(0, c)), v.substr(c + 1)});
+        }
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -559,9 +586,33 @@ int main(int argc, char** argv)
     if (dsi && traceled)
         static_cast<DSi*>(nds.get())->I2C.GetBPTWL()->WriteHook = trace_led;
 
+    FILE* tio = nullptr;
+    if (!traceio.empty())
+    {
+        tio = std::fopen(traceio.c_str(), "w");
+        if (!tio) { std::fprintf(stderr, "cannot open %s\n", traceio.c_str()); return 2; }
+        std::fprintf(tio, "frame,ime9,ie9,if9,ime7,ie7,if7,tm0cnt9,tm0val9,dispcnt_b,bg3cnt_b,bg0hofs_b,bg0vofs_b,bg1hofs_b,bg1vofs_b,"
+                          "bg2hofs_b,bg2vofs_b,bg3hofs_b,bg3vofs_b,bldcnt_b,bldalpha_b,bldy_b,mosaic_b,powcnt1,soundcnt");
+        for (u32 w : tracewords) std::fprintf(tio, ",w%08x", w);
+        std::fprintf(tio, "\n");
+    }
+
     long f = 0;
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
+        for (auto& p : pokes)
+        {
+            if (p.frame != f) continue;
+            if (p.cpu == 7)
+            {
+                if (p.bits == 8) nds->ARM7Write8(p.addr, p.val); else if (p.bits == 16) nds->ARM7Write16(p.addr, p.val); else nds->ARM7Write32(p.addr, p.val);
+            }
+            else
+            {
+                if (p.bits == 8) nds->ARM9Write8(p.addr, p.val); else if (p.bits == 16) nds->ARM9Write16(p.addr, p.val); else nds->ARM9Write32(p.addr, p.val);
+            }
+            std::printf("[poke] frame %ld ARM%d %08x = %x (%d bits)\n", f, p.cpu == 7 ? 7 : 9, p.addr, p.val, p.bits);
+        }
         u32 held = keys;
         int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
@@ -626,11 +677,34 @@ int main(int argc, char** argv)
             }
         }
         nds->RunFrame();
+        if (tio)
+        {
+            auto& b = nds->GPU.GPU2D_B;
+            std::fprintf(tio, "%ld,%u,%08x,%08x,%u,%08x,%08x,%04x,%04x,%08x,%04x,%u,%u,%u,%u,%u,%u,%u,%u,%04x,%04x,%u,%02x%02x,%04x,%04x", f,
+                         nds->IME[0], nds->IE[0], nds->IF[0], nds->IME[1], nds->IE[1], nds->IF[1],
+                         nds->ARM9Read16(0x04000102), nds->ARM9Read16(0x04000100), b.DispCnt, b.BGCnt[3],
+                         b.BGXPos[0], b.BGYPos[0], b.BGXPos[1], b.BGYPos[1], b.BGXPos[2], b.BGYPos[2], b.BGXPos[3], b.BGYPos[3],
+                         b.BlendCnt, b.BlendAlpha, b.EVY, b.BGMosaicSize[1], b.BGMosaicSize[0], nds->PowerControl9, nds->ARM7Read16(0x04000500));
+            for (u32 w : tracewords)
+            {
+                u32 o = w & nds->MainRAMMask & ~3u;
+                u32 v; std::memcpy(&v, &nds->MainRAM[o], 4);
+                std::fprintf(tio, ",%08x", v);
+            }
+            std::fprintf(tio, "\n");
+        }
+        for (auto& [df, dp] : dumpsat)
+        {
+            if (df != f) continue;
+            FILE* d = std::fopen(dp.c_str(), "wb");
+            if (d) { std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, d); std::fclose(d); }
+        }
         if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
             std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],
                         nds->ARM9.R[13], nds->ARM9.CPSR);
     }
 
+    if (tio) std::fclose(tio);
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
     if (!shot.empty()) write_ppm(*nds, shot);
     if (nwifi && !wpapmk.empty())
