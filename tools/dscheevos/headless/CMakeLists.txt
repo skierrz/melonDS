@@ -13,7 +13,7 @@ list(APPEND CMAKE_MODULE_PATH ${MELONDS_DIR}/cmake)
 find_package(PkgConfig REQUIRED)  # net-utils looks up libenet with pkg-config
 add_subdirectory(${MELONDS_DIR}/src/net net EXCLUDE_FROM_ALL)
 
-add_executable(melonds-headless main.cpp platform.cpp)
+add_executable(melonds-headless main.cpp platform.cpp survey.cpp)
 target_link_libraries(melonds-headless PRIVATE core net-utils pthread)
 # melonDS sets these per-directory; the runner must see the same class layouts
 target_compile_definitions(melonds-headless PRIVATE GDBSTUB_ENABLED ARCHITECTURE_x86_64=1)

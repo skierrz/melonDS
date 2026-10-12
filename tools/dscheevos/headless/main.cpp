@@ -56,6 +56,8 @@ int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) :
 
 void hl_signal_stop() { hl::stopped = true; }
 
+namespace survey { bool install(NDS& nds, const std::string& prefix); void finish(NDS& nds); }
+
 // --profile: per VBlank interval, ARM9 cycles inside the DScheevos module
 // (its VBlank call and its idle work) and whether the game reached idle (see
 // ARMv5::ProfileInstr). Counting starts at the first VBlank after the game's
@@ -292,7 +294,11 @@ static void usage()
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
         "  --watch-write ADDR:SIZE  DSi mode: print bus writes (CPU or DMA) to [ADDR, ADDR+SIZE) with the\n"
         "                       frame and the CPU's PC (first 40; the count at exit)\n"
-        "  --verbose            show emulator info/debug logs\n");
+        "  --survey PREFIX      DS mode: the display survey (M1); writes PREFIX.json and PREFIX.frames.csv\n"
+        "                       (sets a phantom ARM9 IE bit 28 to catch absolute IE writes; see survey.cpp)\n"
+        "  --shot-at FRAME:FILE also write a screenshot (PPM) after that frame (repeatable)\n"
+        "  --verbose            show emulator info/debug logs\n"
+        "  script lines \"FRAME TOUCH X Y HOLDFRAMES\" touch the bottom screen at (X, Y)\n");
     std::exit(2);
 }
 
@@ -303,7 +309,8 @@ int main(int argc, char** argv)
     long tracepc = -1;
     bool traceled = false;
     bool profile = false, scriptfromgame = false;
-    std::string proflog, watch;
+    std::string proflog, watch, surveyprefix;
+    std::vector<std::pair<long, std::string>> shots;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
     std::vector<std::string> guestargs;
@@ -328,6 +335,8 @@ int main(int argc, char** argv)
         else if (a == "--firmware-boot") direct = false;
         else if (a == "--arg") guestargs.push_back(next());
         else if (a == "--verbose") hl::verbose = true;
+        else if (a == "--survey") surveyprefix = next();
+        else if (a == "--shot-at") { std::string v = next(); size_t c = v.find(':'); if (c == std::string::npos) usage(); shots.push_back({std::stol(v.substr(0, c)), v.substr(c + 1)}); }
         else if (a == "--cache-model") cachemodel = true;
         else if (a == "--rtc") rtc = next();
         else if (a == "--net") net = true;
@@ -488,7 +497,7 @@ int main(int argc, char** argv)
     // melonDS key mask: bit set = released
     nds->SetKeyMask(~keys & 0xFFF);
 
-    struct Press { long frame; u32 keys; long hold; bool wifidrop; bool wifirekey; };
+    struct Press { long frame; u32 keys; long hold; bool wifidrop; bool wifirekey; bool touch; int tx, ty; };
     std::vector<Press> script;
     if (!scriptpath.empty())
     {
@@ -502,6 +511,11 @@ int main(int argc, char** argv)
             if (line[0] == '#') continue;
             if (std::sscanf(line, "%ld %15s", &p.frame, word) == 2 && !std::strcmp(word, "WIFIDROP"))
                 p.wifidrop = true;
+            else if (!std::strcmp(word, "TOUCH"))
+            {
+                if (std::sscanf(line, "%ld %15s %d %d %ld", &p.frame, word, &p.tx, &p.ty, &p.hold) != 5) continue;
+                p.touch = true;
+            }
             else if (!std::strcmp(word, "WIFIREKEY"))
                 p.wifirekey = true;
             else if (std::sscanf(line, "%ld %i %ld", &p.frame, (int*)&p.keys, &p.hold) != 3) continue;
@@ -524,15 +538,23 @@ int main(int argc, char** argv)
     if (dsi && traceled)
         static_cast<DSi*>(nds.get())->I2C.GetBPTWL()->WriteHook = trace_led;
 
+    if (!surveyprefix.empty())
+    {
+        if (dsi) { std::fprintf(stderr, "--survey is DS mode only\n"); return 2; }
+        if (!survey::install(*nds, surveyprefix)) { std::fprintf(stderr, "cannot write %s.*\n", surveyprefix.c_str()); return 2; }
+    }
+
     long f = 0;
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
         u32 held = keys;
+        int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
         long st = !scriptfromgame ? f : prof::startframe >= 0 ? f - prof::startframe : -1;
         for (auto& p : script)
         {
             if (st < 0) break;
+            if (p.touch) { if (st >= p.frame && st < p.frame + p.hold) { touchx = p.tx; touchy = p.ty; } continue; }
             if (!p.wifidrop && !p.wifirekey && st >= p.frame && st < p.frame + p.hold) held |= p.keys;
             if ((p.wifidrop || p.wifirekey) && st == p.frame && nwifi)
             {
@@ -541,14 +563,19 @@ int main(int argc, char** argv)
             }
         }
         nds->SetKeyMask(~held & 0xFFF);
+        if (touchx >= 0) nds->TouchScreen((u16)touchx, (u16)touchy);
+        else nds->ReleaseScreen();
         hl::frame = f;
         nds->RunFrame();
+        for (auto& [sf, sp] : shots)
+            if (sf == f) write_ppm(*nds, sp);
         if (tracepc >= 0 && f >= tracepc && (f - tracepc) % 30 == 0)
             std::printf("[pc] frame %ld pc=%08x lr=%08x sp=%08x cpsr=%08x\n", f, nds->ARM9.R[15], nds->ARM9.R[14],
                         nds->ARM9.R[13], nds->ARM9.CPSR);
     }
 
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
+    if (!surveyprefix.empty()) survey::finish(*nds);
     if (!shot.empty()) write_ppm(*nds, shot);
     if (nwifi && !wpapmk.empty())
     {

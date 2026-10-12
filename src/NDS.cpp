@@ -1996,7 +1996,12 @@ u8 NDS::ARM9Read8(u32 addr)
         }
 
     case 0x04000000:
-        // Specifically want to call the NDS version, not a subclass
+        if (IOHook && addr < 0x04002000)
+        {
+            u8 v = NDS::ARM9IORead8(addr);
+            IOHook(*this, 0, addr, v, 1);
+            return v;
+        }
         return NDS::ARM9IORead8(addr);
 
     case 0x05000000:
@@ -2057,6 +2062,12 @@ u16 NDS::ARM9Read16(u32 addr)
         }
 
     case 0x04000000:
+        if (IOHook && addr < 0x04002000)
+        {
+            u16 v = NDS::ARM9IORead16(addr);
+            IOHook(*this, 0, addr, v, 2);
+            return v;
+        }
         return NDS::ARM9IORead16(addr);
 
     case 0x05000000:
@@ -2117,6 +2128,12 @@ u32 NDS::ARM9Read32(u32 addr)
         }
 
     case 0x04000000:
+        if (IOHook && addr < 0x04002000)
+        {
+            u32 v = NDS::ARM9IORead32(addr);
+            IOHook(*this, 0, addr, v, 4);
+            return v;
+        }
         return NDS::ARM9IORead32(addr);
 
     case 0x05000000:
@@ -2173,6 +2190,13 @@ void NDS::ARM9Write8(u32 addr, u8 val)
         return;
 
     case 0x04000000:
+        if (IOHook && addr < 0x04002000)
+        {
+            IOHook(*this, 1, addr, val, 1);
+            NDS::ARM9IOWrite8(addr, val);
+            IOHook(*this, 2, addr, val, 1);
+            return;
+        }
         NDS::ARM9IOWrite8(addr, val);
         return;
 
@@ -2214,6 +2238,13 @@ void NDS::ARM9Write16(u32 addr, u16 val)
         return;
 
     case 0x04000000:
+        if (IOHook && addr < 0x04002000)
+        {
+            IOHook(*this, 1, addr, val, 2);
+            NDS::ARM9IOWrite16(addr, val);
+            IOHook(*this, 2, addr, val, 2);
+            return;
+        }
         NDS::ARM9IOWrite16(addr, val);
         return;
 
@@ -2274,6 +2305,13 @@ void NDS::ARM9Write32(u32 addr, u32 val)
         return;
 
     case 0x04000000:
+        if (IOHook && addr < 0x04002000)
+        {
+            IOHook(*this, 1, addr, val, 4);
+            NDS::ARM9IOWrite32(addr, val);
+            IOHook(*this, 2, addr, val, 4);
+            return;
+        }
         NDS::ARM9IOWrite32(addr, val);
         return;
 

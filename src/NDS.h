@@ -277,6 +277,16 @@ public: // TODO: Encapsulate the rest of these members
     u32 WatchLo = 0, WatchSize = 0;
     void (*WatchHook)(NDS& nds, int cpu, u32 addr, u32 val, int size) = nullptr;
 
+    // Optional ARM9 I/O trace (display survey; off unless a frontend sets
+    // IOHook): every ARM9 bus access (CPU or DMA) to 0x04000000-0x04001FFF.
+    // kind 0 = read (val = value read), 1 = before a write, 2 = after a write.
+    // SurveyDMA9 is the ARM9 DMA channel running (-1 = the CPU).
+    void (*IOHook)(NDS& nds, int kind, u32 addr, u32 val, int size) = nullptr;
+    int SurveyDMA9 = -1;
+    // Optional per-scanline call (display survey): at the end of
+    // GPU::StartScanline, with the new VCOUNT.
+    void (*LineHook)(NDS& nds, u32 vcount) = nullptr;
+
     // no need to worry about those overflowing, they can keep going for atleast 4350 years
     u64 ARM9Timestamp, ARM9Target;
     u64 ARM7Timestamp, ARM7Target;

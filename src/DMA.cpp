@@ -557,6 +557,7 @@ void DMA::Run9()
     if (NDS.ARM9Timestamp >= NDS.ARM9Target) return;
 
     Executing = true;
+    NDS.SurveyDMA9 = Num;
 
     // add NS penalty for first accesses in burst
     bool burststart = (Running == 2);
@@ -598,6 +599,7 @@ void DMA::Run9()
     }
 
     Executing = false;
+    NDS.SurveyDMA9 = -1;
     Stall = false;
 
     if (RemCount)
