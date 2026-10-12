@@ -284,7 +284,8 @@ static void usage()
         "                       \"FRAME WIFIDROP\": the emulated access point drops the DSi;\n"
         "                       \"FRAME WIFIREKEY\": it starts a WPA2 group rekey;\n"
         "                       \"FRAME DUMP\" / \"FRAME SHOT\": RAM dump / screenshot then, to the\n"
-        "                       --dump-ram / --screenshot path plus .f<FRAME>.bin / .ppm;\n"
+        "                       --dump-ram / --screenshot path plus .f<FRAME>.bin / .ppm (a RAM\n"
+        "                       dump also writes the ARM9's DTCM to .f<FRAME>.dtcm);\n"
         "                       \"FRAME TOUCH X Y HOLDFRAMES\": touch the lower screen at (X, Y)\n"
         "  --dump-ram FILE      write main RAM (4 or 16 MB) at the end\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
@@ -577,10 +578,19 @@ int main(int argc, char** argv)
                 {
                     std::string out = base + ".f" + std::to_string(p.frame);
                     if (p.shot) write_ppm(*nds, out + ".ppm");
-                    else if (FILE* df = std::fopen((out + ".bin").c_str(), "wb"))
+                    else
                     {
-                        std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, df);
-                        std::fclose(df);
+                        // main RAM (4 or 16 MB), and the ARM9's DTCM next to it
+                        if (FILE* df = std::fopen((out + ".bin").c_str(), "wb"))
+                        {
+                            std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, df);
+                            std::fclose(df);
+                        }
+                        if (FILE* df = std::fopen((out + ".dtcm").c_str(), "wb"))
+                        {
+                            std::fwrite(nds->ARM9.DTCM, 1, sizeof(nds->ARM9.DTCM), df);
+                            std::fclose(df);
+                        }
                     }
                     std::fprintf(stderr, "[runner] frame %ld (script %ld): %s %s\n", f, st, p.dump ? "RAM dump" : "screenshot", out.c_str());
                 }
