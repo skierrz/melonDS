@@ -676,8 +676,8 @@ void DSi_SDHost::Write(u32 addr, u16 val)
             Command = val;
             u8 cmd = Command & 0x3F;
             if (SDTrace)
-                fprintf(stderr, "[sd] %s cmd %04x arg %08x port %u ts %llu pc %08x\n", Num ? "SDIO" : "SDMMC", val, Param, PortSelect & 1,
-                        (unsigned long long)DSi.ARM7Timestamp, DSi.ARM7.R[15]);
+                fprintf(stderr, "[sd] %s cmd %04x arg %08x port %u ts %llu pc %08x blocks %u\n", Num ? "SDIO" : "SDMMC", val, Param, PortSelect & 1,
+                        (unsigned long long)DSi.ARM7Timestamp, DSi.ARM7.R[15], BlockCount16);
             if (SDTrace && !Num) { SDLastCmdTs = DSi.ARM7Timestamp; SDStatusSeen = false; }
 
             // ~48-bit command + 48-bit response, at the SD clock (HCLK/2 .. HCLK/512)
