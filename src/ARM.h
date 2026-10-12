@@ -352,7 +352,11 @@ public:
         u64 VBlank, Idle, IRQMode, Busy;   // this interval
         u32 IdleArrivals;                  // this interval
         u32 Halts;                         // game OS_Halt calls seen (all time)
+        u64 Halted, HaltedBios;            // this interval: cycles halted (Halted == 1), and the part
+                                           // where the halt came from the BIOS (PC >= 0xFFFF0000)
     };
+    bool ProfHaltBios = false;             // the current halt started in the BIOS
+    void ProfHalted(u64 cycles);           // ARM9 cycles skipped while halted
     bool ProfOn = false;
     u32 ProfLo = 0, ProfHi = 0;            // module image
     u32 ProfVBlankLo = 0, ProfVBlankHi = 0;

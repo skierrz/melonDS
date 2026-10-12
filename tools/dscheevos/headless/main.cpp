@@ -69,7 +69,7 @@ long stopafter = -1;        // --profile-frames
 FILE* log = nullptr;        // --profile-log
 long startframe = -1;       // frame of the game's first OS_Halt call
 u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0;
-u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0;
+u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0, halted = 0, haltedbios = 0;
 bool done = false;
 bool cachefromgame = false; // --cache-model-from-game
 std::string pcspath;        // --profile-pcs
@@ -120,20 +120,21 @@ static void on_vblank(ARMv5& cpu)
         idle += p.Idle; idlemax = std::max(idlemax, p.Idle);
         irqmode += p.IRQMode;
         busy += p.Busy;
+        halted += p.Halted; haltedbios += p.HaltedBios;
         bool lagged = p.IdleArrivals == 0;
         if (lagged) { lag++; maxlagrun = std::max(maxlagrun, ++lagrun); }
         else lagrun = 0;
         if (log)
-            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d,%08x,%08x,%08x\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
+            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d,%08x,%08x,%08x,%llu,%llu\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
                          (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged,
-                         cpu.R[15], nds->ARM7.R[15], cpu.CPSR);
+                         cpu.R[15], nds->ARM7.R[15], cpu.CPSR, (unsigned long long)p.Halted, (unsigned long long)p.HaltedBios);
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
             cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr;
         }
     }
-    p.VBlank = p.Idle = p.IRQMode = p.Busy = 0;
+    p.VBlank = p.Idle = p.IRQMode = p.Busy = p.Halted = p.HaltedBios = 0;
     p.IdleArrivals = 0;
     find_module(cpu);
 }
@@ -164,6 +165,8 @@ static void report(NDS& nds)
     std::fprintf(stderr, "[prof] module cycles in CPSR IRQ mode/interval: avg %.0f (%.2f%%)\n",
                  cyc((double)irqmode / n), pct((double)irqmode / n));
     std::fprintf(stderr, "[prof] ARM9 busy: avg %.1f%% of a frame\n", pct((double)busy / n));
+    std::fprintf(stderr, "[prof] ARM9 halted: avg %.0f cycles/interval (%.1f%%), %.1f%% of it in BIOS halts\n",
+                 cyc((double)halted / n), pct((double)halted / n), halted ? 100.0 * haltedbios / halted : 0.0);
     std::fprintf(stderr, "[prof] lag: %llu of %llu intervals (%.2f%%), longest run %llu\n", (unsigned long long)lag,
                  (unsigned long long)n, 100.0 * lag / n, (unsigned long long)maxlagrun);
 }
@@ -279,7 +282,10 @@ static void usage()
         "  --keys MASK          held keys bitmask, active-low style handled for you (bit0=A ... bit9=L)\n"
         "  --script FILE        timed input: lines \"FRAME KEYMASK HOLDFRAMES\" (# comments);\n"
         "                       \"FRAME WIFIDROP\": the emulated access point drops the DSi;\n"
-        "                       \"FRAME WIFIREKEY\": it starts a WPA2 group rekey\n"
+        "                       \"FRAME WIFIREKEY\": it starts a WPA2 group rekey;\n"
+        "                       \"FRAME DUMP\" / \"FRAME SHOT\": RAM dump / screenshot then, to the\n"
+        "                       --dump-ram / --screenshot path plus .f<FRAME>.bin / .ppm;\n"
+        "                       \"FRAME TOUCH X Y HOLDFRAMES\": touch the lower screen at (X, Y)\n"
         "  --dump-ram FILE      write main RAM (4 or 16 MB) at the end\n"
         "  --firmware-boot      boot through firmware instead of direct boot\n"
         "  --trace-pc FRAME     from this frame on, print the ARM9 PC, LR and SP every 30 frames\n"
@@ -489,7 +495,7 @@ int main(int argc, char** argv)
         {
             prof::log = std::fopen(proflog.c_str(), "w");
             if (!prof::log) { std::fprintf(stderr, "cannot write %s\n", proflog.c_str()); return 2; }
-            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr\n");
+            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios\n");
         }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
@@ -506,7 +512,7 @@ int main(int argc, char** argv)
     // melonDS key mask: bit set = released
     nds->SetKeyMask(~keys & 0xFFF);
 
-    struct Press { long frame; u32 keys; long hold; bool wifidrop; bool wifirekey; };
+    struct Press { long frame; u32 keys; long hold; bool wifidrop; bool wifirekey; bool dump; bool shot; bool touch; int x, y; };
     std::vector<Press> script;
     if (!scriptpath.empty())
     {
@@ -518,8 +524,18 @@ int main(int argc, char** argv)
             Press p{};
             char word[16] = {};
             if (line[0] == '#') continue;
-            if (std::sscanf(line, "%ld %15s", &p.frame, word) == 2 && !std::strcmp(word, "WIFIDROP"))
+            int nw = std::sscanf(line, "%ld %15s", &p.frame, word);
+            if (nw == 2 && !std::strcmp(word, "WIFIDROP"))
                 p.wifidrop = true;
+            else if (nw == 2 && !std::strcmp(word, "DUMP"))
+                p.dump = true;
+            else if (nw == 2 && !std::strcmp(word, "SHOT"))
+                p.shot = true;
+            else if (nw == 2 && !std::strcmp(word, "TOUCH"))
+            {
+                if (std::sscanf(line, "%ld %15s %d %d %ld", &p.frame, word, &p.x, &p.y, &p.hold) != 5) continue;
+                p.touch = true;
+            }
             else if (!std::strcmp(word, "WIFIREKEY"))
                 p.wifirekey = true;
             else if (std::sscanf(line, "%ld %i %ld", &p.frame, (int*)&p.keys, &p.hold) != 3) continue;
@@ -546,11 +562,35 @@ int main(int argc, char** argv)
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
         u32 held = keys;
+        int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
         long st = !scriptfromgame ? f : prof::startframe >= 0 ? f - prof::startframe : -1;
         for (auto& p : script)
         {
             if (st < 0) break;
+            if (p.dump || p.shot)
+            {
+                // RAM dump / screenshot of what the previous frame left, next to
+                // --dump-ram / --screenshot, named by script frame: FILE.f<frame>
+                const std::string& base = p.dump ? dumppath : shot;
+                if (st == p.frame && !base.empty())
+                {
+                    std::string out = base + ".f" + std::to_string(p.frame);
+                    if (p.shot) write_ppm(*nds, out + ".ppm");
+                    else if (FILE* df = std::fopen((out + ".bin").c_str(), "wb"))
+                    {
+                        std::fwrite(nds->MainRAM, 1, nds->MainRAMMask + 1, df);
+                        std::fclose(df);
+                    }
+                    std::fprintf(stderr, "[runner] frame %ld (script %ld): %s %s\n", f, st, p.dump ? "RAM dump" : "screenshot", out.c_str());
+                }
+                continue;
+            }
+            if (p.touch)
+            {
+                if (st >= p.frame && st < p.frame + p.hold) { touchx = p.x; touchy = p.y; }
+                continue;
+            }
             if (!p.wifidrop && !p.wifirekey && st >= p.frame && st < p.frame + p.hold) held |= p.keys;
             if ((p.wifidrop || p.wifirekey) && st == p.frame && nwifi)
             {
@@ -559,6 +599,8 @@ int main(int argc, char** argv)
             }
         }
         nds->SetKeyMask(~held & 0xFFF);
+        if (touchx >= 0) nds->TouchScreen((u16)touchx, (u16)touchy);
+        else nds->ReleaseScreen();
         hl::frame = f;
         if (sdtracefrom >= 0 && f >= sdtracefrom && !melonDS::SDTrace) { melonDS::SDTrace = true; std::fprintf(stderr, "[sd] trace from frame %ld\n", f); }
         if (melonDS::SDTrace)

@@ -615,6 +615,8 @@ void ARMv5::Execute()
         }
         else
         {
+            if (ProfOn && Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                ProfHalted(NDS.ARM9Target - NDS.ARM9Timestamp);
             NDS.ARM9Timestamp = NDS.ARM9Target;
             return;
         }
@@ -713,6 +715,8 @@ void ARMv5::Execute()
             {
                 if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
                 {
+                    if (ProfOn)
+                        ProfHalted(NDS.ARM9Target - NDS.ARM9Timestamp);
                     NDS.ARM9Timestamp = NDS.ARM9Target;
                 }
                 break;
@@ -738,6 +742,13 @@ void ARMv5::Execute()
 // still holds what that instruction cost. R[13] is the SP of the mode the
 // instruction ran in unless it changed mode, which the module's entry stubs
 // don't do.
+void ARMv5::ProfHalted(u64 cycles)
+{
+    u64 c = cycles << (2 - NDS.ARM9ClockShift);
+    Prof.Halted += c;
+    if (ProfHaltBios) Prof.HaltedBios += c;
+}
+
 void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
 {
     const u64 c = (u64)Cycles << (2 - NDS.ARM9ClockShift);
@@ -746,6 +757,7 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     const bool vbl = in && ((addr >= ProfVBlankLo && addr < ProfVBlankHi)
                             || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
     Prof.Busy += c;
+    if (Halted == 1) ProfHaltBios = addr >= 0xFFFF0000;
     if (ProfPCs && in && vbl)
     {
         auto& e = (*ProfPCs)[addr];
