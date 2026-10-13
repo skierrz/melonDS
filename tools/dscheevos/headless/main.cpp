@@ -289,6 +289,8 @@ static void usage()
         "  --module-base ADDR   module address for --profile (default 0x02D80000)\n"
         "  --profile-frames N   with --profile: stop N VBlanks after the game's first OS_Halt call\n"
         "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
+        "  --thumb-cycle        ARM9: charge 1 cycle for a Thumb instruction in the upper half of a fetched\n"
+        "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
@@ -308,7 +310,7 @@ int main(int argc, char** argv)
     std::vector<u8> wpapmk;
     long tracepc = -1;
     bool traceled = false;
-    bool profile = false, scriptfromgame = false;
+    bool profile = false, scriptfromgame = false, thumbcycle = false;
     std::string proflog, watch, surveyprefix;
     std::vector<std::pair<long, std::string>> shots;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
@@ -348,6 +350,7 @@ int main(int argc, char** argv)
         else if (a == "--profile-log") proflog = next();
         else if (a == "--script-from-game") scriptfromgame = true;
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
+        else if (a == "--thumb-cycle") thumbcycle = true;
         else usage();
     }
     if (rom.empty() || (mode != "ds" && mode != "dsi")) usage();
@@ -471,6 +474,8 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
+    if (thumbcycle)
+        nds->ARM9.ThumbOddCycle = 1;
     if (profile)
     {
         prof::nds = nds.get();
