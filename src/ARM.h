@@ -268,14 +268,14 @@ public:
     void AddCycles_C() override
     {
         // code only. always nonseq 32-bit for ARM9.
-        s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
+        s32 numC = (R[15] & 0x2) ? ThumbOddCycle : CodeCycles;
         Cycles += numC;
     }
 
     void AddCycles_CI(s32 numI) override
     {
         // code+internal
-        s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
+        s32 numC = (R[15] & 0x2) ? ThumbOddCycle : CodeCycles;
         Cycles += numC + numI;
     }
 
@@ -283,7 +283,7 @@ public:
     {
         // LDR/LDM cycles. ARM9 seems to skip the internal cycle there.
         // TODO: ITCM data fetches shouldn't be parallelized, they say
-        s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
+        s32 numC = (R[15] & 0x2) ? ThumbOddCycle : CodeCycles;
         s32 numD = DataCycles;
 
         //if (DataRegion != CodeRegion)
@@ -295,7 +295,7 @@ public:
     void AddCycles_CD() override
     {
         // TODO: ITCM data fetches shouldn't be parallelized, they say
-        s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
+        s32 numC = (R[15] & 0x2) ? ThumbOddCycle : CodeCycles;
         s32 numD = DataCycles;
 
         //if (DataRegion != CodeRegion)
@@ -329,6 +329,7 @@ public:
         u64 IHit, IMiss, DReadHit, DReadMiss, DWriteHit, DWriteMiss, DWriteBack;
     };
     bool CacheModel = false;
+    s32 ThumbOddCycle = 0;               // cycles for a Thumb instruction in a fetched word's upper half
     CacheModelStats CacheStats {};
     void CacheModelReset();
     s32 CacheModelCode(u32 addr);

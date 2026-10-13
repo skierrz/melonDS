@@ -675,7 +675,10 @@ void ARMv5::Execute()
                 R[15] += 2;
                 CurInstr = NextInstr[0];
                 NextInstr[0] = NextInstr[1];
-                if (R[15] & 0x2) { NextInstr[1] >>= 16; CodeCycles = 0; }
+                // the second halfword came with the first one's 32-bit fetch: stock melonDS charges
+                // it nothing, so Thumb runs up to 2 instructions a cycle; ThumbOddCycle charges the
+                // 1 cycle an ARM9E needs to issue it (cache-model studies only, off by default)
+                if (R[15] & 0x2) { NextInstr[1] >>= 16; CodeCycles = ThumbOddCycle; }
                 else             NextInstr[1] = CodeRead32(R[15], false);
 
                 // actually execute

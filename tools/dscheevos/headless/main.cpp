@@ -317,6 +317,8 @@ static void usage()
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
         "  --profile-idle-pcs FILE  with --profile: the module's idle work by PC (count, cycles, cache misses)\n"
+        "  --thumb-cycle        ARM9: charge 1 cycle for a Thumb instruction in the upper half of a fetched\n"
+        "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
@@ -342,7 +344,7 @@ int main(int argc, char** argv)
     std::vector<u8> wpapmk;
     long tracepc = -1, sdtracefrom = -1;
     bool traceled = false;
-    bool profile = false, scriptfromgame = false;
+    bool profile = false, scriptfromgame = false, thumbcycle = false;
     std::string proflog, watch;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
@@ -386,6 +388,7 @@ int main(int argc, char** argv)
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
+        else if (a == "--thumb-cycle") thumbcycle = true;
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
         else if (a == "--trace-io") traceio = next();
@@ -525,6 +528,8 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
+    if (thumbcycle)
+        nds->ARM9.ThumbOddCycle = 1;
     if (profile)
     {
         prof::nds = nds.get();
