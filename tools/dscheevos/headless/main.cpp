@@ -156,10 +156,11 @@ static void report(NDS& nds)
     else
         std::fprintf(stderr, "[prof] no module, stock OS_Halt\n");
     // MPU at exit: data cache, write buffer (write-back), code cache, for game RAM and the module
-    for (u32 a : {0x02000000u, nds.ARM9.ProfLo ? nds.ARM9.ProfLo : base})
+    for (u32 a : {0x02000000u, nds.ARM9.ProfLo ? nds.ARM9.ProfLo : base, 0x03700000u})
     {
         u8 m = nds.ARM9.PU_PrivMap[a >> 12];
-        std::fprintf(stderr, "[prof] MPU %08x: data cache %d, write-back %d, code cache %d\n", a, (m >> 4) & 1, (m >> 5) & 1, (m >> 6) & 1);
+        std::fprintf(stderr, "[prof] MPU %08x: read %d write %d exec %d, data cache %d, write-back %d, code cache %d\n", a,
+                     m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 4) & 1, (m >> 5) & 1, (m >> 6) & 1);
     }
     if (startframe < 0 || !n)
     {
