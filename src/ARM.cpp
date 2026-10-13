@@ -752,7 +752,7 @@ void ARMv5::ProfHalted(u64 cycles)
     if (ProfHaltBios) Prof.HaltedBios += c;
     if (CensusOn && CensusInHalt)
     {
-        CensusHalted[CensusKind >= 0x100 ? 1 : CensusKind == 1 ? 0 : 2] += c;
+        CensusHalted[CensusKind >= 0x100 ? 1 : CensusKind == 1 ? 0 : CensusKind == 3 ? 3 : 2] += c;
         if (CensusSites) (*CensusSites)[{CensusKind, CensusPC, CensusLR}].Cycles += c;
     }
 }
@@ -827,6 +827,14 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
             else
             {
                 CensusKind = oshalt ? 1 : 2; CensusPC = addr; CensusLR = R[14];
+                // OS_Halt from a caller the module doesn't take as the SDK's idle
+                // loop (the instruction after the call must branch back to it): kind 3
+                if (oshalt && !ProfHaltEntry)
+                {
+                    u32 lr = R[14];
+                    bool idle = (lr & 1) ? NDS.ARM9Read16(lr & ~1u) == 0xE7FC : NDS.ARM9Read32(lr) == 0xEAFFFFFD;
+                    if (!idle) CensusKind = 3;
+                }
             }
             if (CensusSites) (*CensusSites)[{CensusKind, CensusPC, CensusLR}].Count++;
             if (CensusSeqLine < 0) { CensusSeqLine = NDS.GPU.VCount; CensusSeqKind = CensusKind; CensusSeqRun = 0; }

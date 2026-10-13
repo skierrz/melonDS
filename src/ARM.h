@@ -404,7 +404,8 @@ public:
     u32 CensusSeqKind = 0;
     u64 CensusSeqRun = 0;
     u64 CensusSeqMax = 4000;
-    u64 CensusHalted[3] {};                // this interval: SDK OS_Halt, BIOS, other CP15 halts
+    u64 CensusHalted[4] {};                // this interval: SDK OS_Halt from its idle loop, BIOS, other CP15
+                                           // halts, OS_Halt from other callers (kind 3)
     u64 CensusSampleAcc = 0;
     u32 CensusSampleEvery = 2048;          // one PC sample per this many cycles run
     std::map<std::tuple<u32, u32, u32>, CensusSite>* CensusSites = nullptr;
