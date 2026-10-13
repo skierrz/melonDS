@@ -588,7 +588,7 @@ int main(int argc, char** argv)
                         }
                         if (FILE* df = std::fopen((out + ".dtcm").c_str(), "wb"))
                         {
-                            std::fwrite(nds->ARM9.DTCM, 1, sizeof(nds->ARM9.DTCM), df);
+                            std::fwrite(nds->ARM9.DTCM, 1, DTCMPhysicalSize, df);
                             std::fclose(df);
                         }
                     }
