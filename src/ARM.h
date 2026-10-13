@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <optional>
 #include <map>
+#include <tuple>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -376,6 +377,34 @@ public:
     u32 ProfPend[8] {};
     u32 ProfPendN = 0;
     CacheModelStats ProfPrevStats {};
+    // Optional wait census (needs ProfOn; a frontend sets CensusOn and the
+    // maps): where the ARM9 waits. Each halt is put down to a site: the SDK's
+    // OS_Halt shape (kind 1, its caller in LR), another CP15 halt (kind 2, PC
+    // of the mcr and LR), or a BIOS halt (kind 0x100 + SWI number, PC of the
+    // last SWI 4/5/6 and the LR its caller had). Halted cycles per interval
+    // by kind, PC samples while running, and which PCs read DISPSTAT, VCOUNT,
+    // IE or IF. Cycles in 133 MHz units.
+    struct CensusSite { u64 Cycles, Count; };
+    bool CensusOn = false;
+    u32 CensusKind = 0, CensusPC = 0, CensusLR = 0;            // the current halt
+    u32 CensusSwiNum = 0, CensusSwiPC = 0, CensusSwiLR = 0;    // last SWI 4/5/6
+    u32 CensusPrevLR = 0;
+    bool CensusInHalt = false;
+    // the frame's last wait: VCOUNT where the run of halts going on at VBlank
+    // began (-1: none), its first halt's kind, and the cycles the ARM9 ran
+    // outside IRQ mode and the BIOS since then (over CensusSeqMax ends the run:
+    // a game thread woke up)
+    int CensusSeqLine = -1;
+    u32 CensusSeqKind = 0;
+    u64 CensusSeqRun = 0;
+    u64 CensusSeqMax = 4000;
+    u64 CensusHalted[3] {};                // this interval: SDK OS_Halt, BIOS, other CP15 halts
+    u64 CensusSampleAcc = 0;
+    u32 CensusSampleEvery = 2048;          // one PC sample per this many cycles run
+    std::map<std::tuple<u32, u32, u32>, CensusSite>* CensusSites = nullptr;
+    std::map<u32, u64>* CensusHot = nullptr;            // PC & ~3 -> samples
+    std::map<u64, u64>* CensusIO = nullptr;             // (reg << 32 | pc) -> reads
+    void CensusIORead(u32 addr);
 
     void CP15Write(u32 id, u32 val);
     u32 CP15Read(u32 id) const;

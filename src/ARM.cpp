@@ -747,6 +747,17 @@ void ARMv5::ProfHalted(u64 cycles)
     u64 c = cycles << (2 - NDS.ARM9ClockShift);
     Prof.Halted += c;
     if (ProfHaltBios) Prof.HaltedBios += c;
+    if (CensusOn && CensusInHalt)
+    {
+        CensusHalted[CensusKind >= 0x100 ? 1 : CensusKind == 1 ? 0 : 2] += c;
+        if (CensusSites) (*CensusSites)[{CensusKind, CensusPC, CensusLR}].Cycles += c;
+    }
+}
+
+void ARMv5::CensusIORead(u32 addr)
+{
+    if (CensusIO && (addr == 0x04000004 || addr == 0x04000006 || addr == 0x04000210 || addr == 0x04000214))
+        (*CensusIO)[((u64)addr << 32) | (R[15] - ((CPSR & 0x20) ? 4 : 8))]++;
 }
 
 void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
@@ -785,9 +796,48 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
         ProfInIdle = false;     // returning from an IRQ into idle code counts as arriving
     // the game's OS_Halt: its jump into the module, or the stock SDK code
     // (mov r0, #0; mcr p15, 0, r0, c7, c0, 4; bx lr)
-    if (!(cpsr & 0x20) && (ProfHaltEntry ? addr == ProfHaltEntry
-            : CurInstr == 0xEE070F90 && ProfPrevInstr == 0xE3A00000 && NextInstr[0] == 0xE12FFF1E))
+    const bool oshalt = !(cpsr & 0x20) && (ProfHaltEntry ? addr == ProfHaltEntry
+            : CurInstr == 0xEE070F90 && ProfPrevInstr == 0xE3A00000 && NextInstr[0] == 0xE12FFF1E);
+    if (oshalt)
         Prof.Halts++;
+    if (CensusOn)
+    {
+        if (Halted == 1 && !CensusInHalt)
+        {
+            CensusInHalt = true;
+            if (addr >= 0xFFFF0000)
+            {
+                CensusKind = 0x100 + CensusSwiNum; CensusPC = CensusSwiPC; CensusLR = CensusSwiLR;
+            }
+            else
+            {
+                CensusKind = oshalt ? 1 : 2; CensusPC = addr; CensusLR = R[14];
+            }
+            if (CensusSites) (*CensusSites)[{CensusKind, CensusPC, CensusLR}].Count++;
+            if (CensusSeqLine < 0) { CensusSeqLine = NDS.GPU.VCount; CensusSeqKind = CensusKind; CensusSeqRun = 0; }
+        }
+        else if (Halted != 1)
+        {
+            CensusInHalt = false;
+            if (CensusSeqLine >= 0 && (cpsr & 0x1F) != 0x12 && addr < 0xFFFF0000 && (CensusSeqRun += c) > CensusSeqMax)
+                CensusSeqLine = -1;
+            // SWI 4/5/6 (IntrWait, VBlankIntrWait, Halt) outside the BIOS
+            if (addr < 0xFFFF0000)
+            {
+                u32 num = 0xFFFFFFFF;
+                if (cpsr & 0x20) { if ((CurInstr & 0xFF00) == 0xDF00) num = CurInstr & 0xFF; }
+                else if ((CurInstr & 0x0F000000) == 0x0F000000 && (CurInstr >> 28) != 0xF) num = (CurInstr >> 16) & 0xFF;
+                if (num >= 4 && num <= 6) { CensusSwiNum = num; CensusSwiPC = addr; CensusSwiLR = CensusPrevLR; }
+            }
+            CensusSampleAcc += c;
+            if (CensusSampleAcc >= CensusSampleEvery)
+            {
+                CensusSampleAcc -= CensusSampleEvery;
+                if (CensusHot) (*CensusHot)[addr & ~1u]++;
+            }
+        }
+        CensusPrevLR = R[14];
+    }
     ProfPrevInstr = CurInstr;
 }
 
