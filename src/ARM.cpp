@@ -781,6 +781,7 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
             e.IMiss += CacheStats.IMiss - ProfPrevStats.IMiss;
             e.DReadMiss += CacheStats.DReadMiss - ProfPrevStats.DReadMiss;
             e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
+            if ((cpsr & 0x80) && (NDS.IME[0] & 1) && (NDS.IE[0] & NDS.IF[0])) e.MaskedPend += c;
         }
     }
     if (ProfRoles && in && !vbl && !irq)
@@ -821,6 +822,20 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
         else     Prof.GameCycles += c;
         Prof.GameInstr++;
     }
+    if (in && !irq && (cpsr & 0x80))
+    {
+        Prof.Masked += c;
+        if ((NDS.IME[0] & 1) && (NDS.IE[0] & NDS.IF[0]))
+        {
+            Prof.MaskedPend += c;
+            ProfMaskRun += c;
+            if (ProfMaskRun > Prof.MaskedPendMax) Prof.MaskedPendMax = ProfMaskRun;
+        }
+        else
+            ProfMaskRun = 0;
+    }
+    else
+        ProfMaskRun = 0;
     if (in)
     {
         if (vbl) Prof.VBlank += c;

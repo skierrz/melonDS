@@ -1359,6 +1359,10 @@ void DSi::MapNWRAMRange(u32 cpu, u32 num, u32 val)
 
 void DSi::UpdateVRAMTimings()
 {
+    // DScheevos runner: the 0x0C000000 mirror is main RAM (16 MB on the DSi), with main RAM's
+    // timing; melonDS left it on the "void" timing (1 cycle), which made uncached accesses
+    // through the mirror look almost free.
+    SetARM9RegionTimings(0x0C000, 0x0D000, Mem9_MainRAM, 16, 8, 1);
     if (SCFG_EXT[0] & (1<<13))
     {
         SetARM9RegionTimings(0x06000, 0x07000, Mem9_VRAM, 32, 1, 1);

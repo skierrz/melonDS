@@ -127,7 +127,8 @@ static void find_module(ARMv5& cpu)
     if (ram32(base) == 0x56435344 && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
         && vblank >= base && vblank < halt)
     {
-        cpu.ProfLo = base; cpu.ProfHi = base + size; cpu.ProfHaltEntry = halt;
+        // the whole 2 MB region is the module's: code it generates at run time lives in its heap
+        cpu.ProfLo = base; cpu.ProfHi = base + 0x200000; cpu.ProfHaltEntry = halt;
         cpu.ProfVBlankLo = vblank; cpu.ProfVBlankHi = halt;
         cpu.ProfIrqStackLo = base + size; cpu.ProfIrqStackHi = base + 0x200000 - 0x2000;
     }
@@ -220,7 +221,8 @@ static void on_vblank(ARMv5& cpu)
                          (unsigned long long)p.PollI, (unsigned long long)p.PollD, (unsigned long long)p.PollWB,
                          (unsigned long long)p.RevI, (unsigned long long)p.RevD,
                          (unsigned long long)a7.Prof7Busy, (unsigned long long)a7.Prof7Range);
-        if (log) std::fprintf(log, ",%lld,%u,%u,%llu\n", (long long)p.GameExtraIRQ, p.Resumes, p.IRQs, (unsigned long long)p.IRQMax);
+        if (log) std::fprintf(log, ",%lld,%u,%u,%llu,%llu,%llu,%llu\n", (long long)p.GameExtraIRQ, p.Resumes, p.IRQs, (unsigned long long)p.IRQMax,
+                              (unsigned long long)p.Masked, (unsigned long long)p.MaskedPend, (unsigned long long)p.MaskedPendMax);
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
@@ -680,7 +682,8 @@ int main(int argc, char** argv)
             if (!prof::log) { std::fprintf(stderr, "cannot write %s\n", proflog.c_str()); return 2; }
             std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios,"
                          "game,game_irq,game_instr,game_imiss,game_dreadmiss,game_dwritemiss,game_writeback,game_iextra,game_dextra,"
-                         "poll_i,poll_d,poll_wb,rev_i,rev_d,arm7_busy,arm7_range,game_extra_irq,resumes,irqs,irq_max\n");
+                         "poll_i,poll_d,poll_wb,rev_i,rev_d,arm7_busy,arm7_range,game_extra_irq,resumes,irqs,irq_max,"
+                         "masked,masked_pend,masked_pend_max\n");
         }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
@@ -938,14 +941,14 @@ int main(int argc, char** argv)
         FILE* pf = std::fopen(prof::idlepcspath.c_str(), "w");
         if (pf)
         {
-            std::fprintf(pf, "kind,addr,count,cycles,imiss,dreadmiss,dwritemiss\n");
+            std::fprintf(pf, "kind,addr,count,cycles,imiss,dreadmiss,dwritemiss,masked_pend\n");
             for (size_t i = 0; i < prof::idlepcs.size(); i++)
             {
                 auto& e = prof::idlepcs[i];
                 if (e.Count)
-                    std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu\n", prof::base + (u32)i * 2, (unsigned long long)e.Count,
+                    std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu,%llu\n", prof::base + (u32)i * 2, (unsigned long long)e.Count,
                                  (unsigned long long)e.Cycles, (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss,
-                                 (unsigned long long)e.DWriteMiss);
+                                 (unsigned long long)e.DWriteMiss, (unsigned long long)e.MaskedPend);
             }
             std::fclose(pf);
         }

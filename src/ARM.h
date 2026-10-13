@@ -372,7 +372,11 @@ public:
         u32 Resumes;                       // the game ran right after module code (IRQ or return)
         u32 IRQs;                          // stretches of CPSR IRQ mode (IRQ handler runs)
         u64 IRQMax;                        // the longest one (cycles, 133 MHz units, module included)
+        // module code outside IRQ mode with CPSR.I set: all of it, the part with an IRQ waiting
+        // (IME on, IE & IF: the game's IRQ is held off), and the longest such wait
+        u64 Masked, MaskedPend, MaskedPendMax;
     };
+    u64 ProfMaskRun = 0;                   // the current wait so far
     u64 ProfIRQRun = 0;                    // the current IRQ-mode stretch so far
     bool ProfPrevIRQ = false;
     bool ProfHaltBios = false;             // the current halt started in the BIOS
@@ -390,7 +394,7 @@ public:
     // Optional, with the cache model: the VBlank call's instructions by PC
     // (cycles, runs, I-cache misses, D-cache read/write misses) and its data
     // misses by address (bit 0: write). A frontend sets the maps.
-    struct ProfPCStat { u64 Cycles, Count, IMiss, DReadMiss, DWriteMiss; };
+    struct ProfPCStat { u64 Cycles, Count, IMiss, DReadMiss, DWriteMiss, MaskedPend; };
     std::map<u32, ProfPCStat>* ProfPCs = nullptr;
     std::map<u32, u64>* ProfDMiss = nullptr;
     // Optional: the module's idle work (PC in the module, not the VBlank
