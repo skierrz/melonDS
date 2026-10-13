@@ -77,6 +77,15 @@ std::map<u32, ARMv5::ProfPCStat> pcs;
 std::map<u32, u64> dmiss;
 std::string idlepcspath;    // --profile-idle-pcs
 std::vector<ARMv5::ProfPCStat> idlepcs;
+std::string gamepcspath;    // --profile-game-pcs
+std::map<u32, ARMv5::ProfGamePC> gamepcs;
+std::string arm7path;       // --profile-arm7 (cycles by 256-byte PC block)
+bool arm7 = false;          // ARM7 counters (any --profile-arm7*)
+u32 arm7lo = 0, arm7hi = 0; // --profile-arm7-range
+std::vector<u64> arm7blocks;
+u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
+s64 giextra = 0, gdextra = 0;
+u64 polli = 0, polld = 0, pollwb = 0, revi = 0, revd = 0, a7busy = 0, a7range = 0, a7rangemax = 0;
 
 static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->MainRAMMask & ~3u], 4); return v; }
 
@@ -114,6 +123,13 @@ static void on_vblank(ARMv5& cpu)
             }
             if (!pcspath.empty()) { cpu.ProfPCs = &pcs; cpu.ProfDMiss = &dmiss; cpu.ProfPrevStats = cpu.CacheStats; }
             if (!idlepcspath.empty()) { idlepcs.assign(0x80000 / 2, {}); cpu.ProfIdlePCs = &idlepcs; cpu.ProfPrevStats = cpu.CacheStats; }
+            if (!gamepcspath.empty()) cpu.ProfGamePCs = &gamepcs;
+            if (arm7)
+            {
+                auto& a7 = nds->ARM7;
+                a7.Prof7On = true; a7.Prof7Lo = arm7lo; a7.Prof7Hi = arm7hi;
+                if (!arm7path.empty()) { arm7blocks.assign(0x40000, 0); a7.Prof7Blocks = arm7blocks.data(); }
+            }
         }
     }
     else if (!done)
@@ -124,21 +140,39 @@ static void on_vblank(ARMv5& cpu)
         irqmode += p.IRQMode;
         busy += p.Busy;
         halted += p.Halted; haltedbios += p.HaltedBios;
+        game += p.GameCycles; gameirq += p.GameIRQCycles; gameinstr += p.GameInstr;
+        gimiss += p.GameIMiss; gdmiss += p.GameDReadMiss; gdwmiss += p.GameDWriteMiss; gwb += p.GameDWriteBack;
+        giextra += p.GameIExtra; gdextra += p.GameDExtra;
+        polli += p.PollI; polld += p.PollD; pollwb += p.PollWB; revi += p.RevI; revd += p.RevD;
+        auto& a7 = nds->ARM7;
+        a7busy += a7.Prof7Busy; a7range += a7.Prof7Range; a7rangemax = std::max(a7rangemax, a7.Prof7Range);
         bool lagged = p.IdleArrivals == 0;
         if (lagged) { lag++; maxlagrun = std::max(maxlagrun, ++lagrun); }
         else lagrun = 0;
         if (log)
-            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d,%08x,%08x,%08x,%llu,%llu\n", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
+            std::fprintf(log, "%ld,%llu,%llu,%llu,%llu,%u,%d,%08x,%08x,%08x,%llu,%llu", hl::frame, (unsigned long long)p.VBlank, (unsigned long long)p.Idle,
                          (unsigned long long)p.IRQMode, (unsigned long long)p.Busy, p.IdleArrivals, lagged,
                          cpu.R[15], nds->ARM7.R[15], cpu.CPSR, (unsigned long long)p.Halted, (unsigned long long)p.HaltedBios);
+        if (log)
+            std::fprintf(log, ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%lld,%lld,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+                         (unsigned long long)p.GameCycles, (unsigned long long)p.GameIRQCycles, (unsigned long long)p.GameInstr,
+                         (unsigned long long)p.GameIMiss, (unsigned long long)p.GameDReadMiss, (unsigned long long)p.GameDWriteMiss,
+                         (unsigned long long)p.GameDWriteBack, (long long)p.GameIExtra, (long long)p.GameDExtra,
+                         (unsigned long long)p.PollI, (unsigned long long)p.PollD, (unsigned long long)p.PollWB,
+                         (unsigned long long)p.RevI, (unsigned long long)p.RevD,
+                         (unsigned long long)a7.Prof7Busy, (unsigned long long)a7.Prof7Range);
+        if (log) std::fprintf(log, ",%lld,%u,%u,%llu\n", (long long)p.GameExtraIRQ, p.Resumes, p.IRQs, (unsigned long long)p.IRQMax);
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
-            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr;
+            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr;
+            nds->ARM7.Prof7Blocks = nullptr;
         }
     }
-    p.VBlank = p.Idle = p.IRQMode = p.Busy = p.Halted = p.HaltedBios = 0;
-    p.IdleArrivals = 0;
+    u32 halts = p.Halts;
+    p = {};
+    p.Halts = halts;
+    nds->ARM7.Prof7Busy = nds->ARM7.Prof7Range = 0;
     find_module(cpu);
 }
 
@@ -156,12 +190,21 @@ static void report(NDS& nds)
     else
         std::fprintf(stderr, "[prof] no module, stock OS_Halt\n");
     // MPU at exit: data cache, write buffer (write-back), code cache, for game RAM and the module
-    for (u32 a : {0x02000000u, nds.ARM9.ProfLo ? nds.ARM9.ProfLo : base, 0x03700000u})
+    for (u32 a : {0x02000000u, nds.ARM9.ProfLo ? nds.ARM9.ProfLo : base, 0x03700000u, 0x03000000u,
+                  (nds.ARM9.ProfLo ? nds.ARM9.ProfLo : base) + 0x0A000000u, 0x02FFF000u})
     {
         u8 m = nds.ARM9.PU_PrivMap[a >> 12];
         std::fprintf(stderr, "[prof] MPU %08x: read %d write %d exec %d, data cache %d, write-back %d, code cache %d\n", a,
                      m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 4) & 1, (m >> 5) & 1, (m >> 6) & 1);
     }
+    std::fprintf(stderr, "[prof] MPU regions:");
+    for (int i = 0; i < 8; i++)
+    {
+        u32 r = nds.ARM9.PU_Region[i];
+        if (r & 1) std::fprintf(stderr, " %d:%08x+%x", i, r & ~0xFFFu, 2u << ((r >> 1) & 0x1F));
+    }
+    std::fprintf(stderr, " | D-cache bits %02x write-back %02x I-cache %02x\n", nds.ARM9.PU_DataCacheable,
+                 nds.ARM9.PU_DataCacheWrite, nds.ARM9.PU_CodeCacheable);
     if (startframe < 0 || !n)
     {
         std::fprintf(stderr, "[prof] the game never called OS_Halt\n");
@@ -179,6 +222,21 @@ static void report(NDS& nds)
                  cyc((double)halted / n), pct((double)halted / n), halted ? 100.0 * haltedbios / halted : 0.0);
     std::fprintf(stderr, "[prof] lag: %llu of %llu intervals (%.2f%%), longest run %llu\n", (unsigned long long)lag,
                  (unsigned long long)n, 100.0 * lag / n, (unsigned long long)maxlagrun);
+    std::fprintf(stderr, "[game] cycles/interval outside the module: %.0f (%.2f%%), of it IRQ mode %.0f; instructions %.0f (CPI %.3f)\n",
+                 cyc((double)(game + gameirq) / n), pct((double)(game + gameirq) / n), cyc((double)gameirq / n), (double)gameinstr / n,
+                 gameinstr ? cyc((double)(game + gameirq)) / gameinstr : 0.0);
+    if (nds.ARM9.CacheModel)
+    {
+        std::fprintf(stderr, "[game] cache misses/interval: I %.1f, D read %.1f, D write %.1f, write-backs %.1f\n",
+                     (double)gimiss / n, (double)gdmiss / n, (double)gdwmiss / n, (double)gwb / n);
+        std::fprintf(stderr, "[game] vs a cache the module never touched: extra cycles/interval I %.0f D %.0f (total %.0f, %.3f%%);"
+                     " misses caused/interval I %.1f D %.1f write-backs %.1f (reverse I %.1f D %.1f)\n",
+                     cyc((double)giextra / n), cyc((double)gdextra / n), cyc((double)(giextra + gdextra) / n), pct((double)(giextra + gdextra) / n),
+                     (double)polli / n, (double)polld / n, (double)pollwb / n, (double)revi / n, (double)revd / n);
+    }
+    if (arm7)
+        std::fprintf(stderr, "[arm7] busy cycles/interval %.0f (%.2f%% of 560190); in %08x-%08x %.0f avg, %llu max\n",
+                     (double)a7busy / n, 100.0 * a7busy / n / 560190, arm7lo, arm7hi, (double)a7range / n, (unsigned long long)a7rangemax);
 }
 }
 
@@ -318,6 +376,13 @@ static void usage()
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
         "  --profile-idle-pcs FILE  with --profile: the module's idle work by PC (count, cycles, cache misses)\n"
+        "  --profile-game-pcs FILE  with --profile and the cache model: the game's extra cycles from sharing the\n"
+        "                       caches with the module, by fetched code line and by data-access PC (CSV)\n"
+        "  --profile-arm7 FILE  with --profile: ARM7 cycles by 256-byte PC block from the game's start (CSV);\n"
+        "                       ARM7 busy cycles per interval in the profile log\n"
+        "  --profile-arm7-range LO:HI  with --profile: ARM7 cycles per interval with the PC in [LO, HI)\n"
+        "  --whatif-module-isets MASK / --whatif-module-dsets MASK  timing study: the module's code fetches /\n"
+        "                       data accesses use only cache sets (set & MASK), as if laid out in them\n"
         "  --thumb-cycle        ARM9: charge 1 cycle for a Thumb instruction in the upper half of a fetched\n"
         "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
@@ -346,6 +411,7 @@ int main(int argc, char** argv)
     long tracepc = -1, sdtracefrom = -1;
     bool traceled = false;
     bool profile = false, scriptfromgame = false, thumbcycle = false;
+    u32 whatifi = 0, whatifd = 0;
     std::string proflog, watch;
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
@@ -389,6 +455,12 @@ int main(int argc, char** argv)
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
+        else if (a == "--profile-game-pcs") prof::gamepcspath = next();
+        else if (a == "--whatif-module-isets") whatifi = std::stoul(next(), nullptr, 0);
+        else if (a == "--whatif-module-dsets") whatifd = std::stoul(next(), nullptr, 0);
+        else if (a == "--profile-arm7") { prof::arm7 = true; prof::arm7path = next(); }
+        else if (a == "--profile-arm7-range") { std::string v = next(); size_t c = v.find(':'); prof::arm7 = true;
+            prof::arm7lo = std::stoul(v.substr(0, c), nullptr, 0); prof::arm7hi = std::stoul(v.substr(c + 1), nullptr, 0); }
         else if (a == "--thumb-cycle") thumbcycle = true;
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
@@ -529,6 +601,7 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
+    nds->ARM9.WhatIfISets = whatifi; nds->ARM9.WhatIfDSets = whatifd;
     if (thumbcycle)
         nds->ARM9.ThumbOddCycle = 1;
     if (profile)
@@ -540,7 +613,9 @@ int main(int argc, char** argv)
         {
             prof::log = std::fopen(proflog.c_str(), "w");
             if (!prof::log) { std::fprintf(stderr, "cannot write %s\n", proflog.c_str()); return 2; }
-            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios\n");
+            std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios,"
+                         "game,game_irq,game_instr,game_imiss,game_dreadmiss,game_dwritemiss,game_writeback,game_iextra,game_dextra,"
+                         "poll_i,poll_d,poll_wb,rev_i,rev_d,arm7_busy,arm7_range,game_extra_irq,resumes,irqs,irq_max\n");
         }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
@@ -767,6 +842,30 @@ int main(int argc, char** argv)
                                  a & ~3u, (unsigned long long)n);
                 std::fclose(pf);
             }
+        }
+    }
+    if (profile && !prof::gamepcspath.empty())
+    {
+        FILE* pf = std::fopen(prof::gamepcspath.c_str(), "w");
+        if (pf)
+        {
+            // code: key = the fetched line; data: key = the instruction's PC (cycles in 133 MHz units)
+            std::fprintf(pf, "addr,iextra,dextra,poll_i,poll_d\n");
+            for (auto& [a, e] : prof::gamepcs)
+                std::fprintf(pf, "%08x,%lld,%lld,%llu,%llu\n", a, (long long)e.IExtra, (long long)e.DExtra,
+                             (unsigned long long)e.PollI, (unsigned long long)e.PollD);
+            std::fclose(pf);
+        }
+    }
+    if (profile && !prof::arm7path.empty())
+    {
+        FILE* pf = std::fopen(prof::arm7path.c_str(), "w");
+        if (pf)
+        {
+            std::fprintf(pf, "block,cycles\n");
+            for (size_t i = 0; i < prof::arm7blocks.size(); i++)
+                if (prof::arm7blocks[i]) std::fprintf(pf, "%08x,%llu\n", (u32)i << 8, (unsigned long long)prof::arm7blocks[i]);
+            std::fclose(pf);
         }
     }
     if (profile && !prof::idlepcspath.empty())

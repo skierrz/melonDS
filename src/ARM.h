@@ -334,6 +334,8 @@ public:
     void CacheModelReset();
     s32 CacheModelCode(u32 addr);
     s32 CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached);
+    s32 CacheModelCodeReal(u32 addr);
+    s32 CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s32 uncached);
     void CacheModelDInvalidateLine(u32 addr, bool clean);
     void CacheModelDInvalidateSetWay(u32 val, bool clean);
     void CacheModelDInvalidateAll();
@@ -356,7 +358,23 @@ public:
         u32 Halts;                         // game OS_Halt calls seen (all time)
         u64 Halted, HaltedBios;            // this interval: cycles halted (Halted == 1), and the part
                                            // where the halt came from the BIOS (PC >= 0xFFFF0000)
+        // the GAME (PC outside the module), this interval: cycles outside / in CPSR IRQ mode,
+        // instructions, and with the cache model its own cache misses (code fetches outside the
+        // module, data accesses by instructions outside it)
+        u64 GameCycles, GameIRQCycles, GameInstr;
+        u64 GameIMiss, GameDReadMiss, GameDWriteMiss, GameDWriteBack;
+        // shadow cache (see CacheShadow): what the game's accesses would have cost had the module
+        // never touched the caches. Extra = real cost - shadow cost (cycles, 133 MHz units);
+        // Poll = real miss where the shadow hit, Rev = real hit where the shadow missed
+        s64 GameIExtra, GameDExtra;
+        u64 PollI, PollD, PollWB, RevI, RevD;
+        s64 GameExtraIRQ;                  // the part of GameIExtra + GameDExtra in CPSR IRQ mode
+        u32 Resumes;                       // the game ran right after module code (IRQ or return)
+        u32 IRQs;                          // stretches of CPSR IRQ mode (IRQ handler runs)
+        u64 IRQMax;                        // the longest one (cycles, 133 MHz units, module included)
     };
+    u64 ProfIRQRun = 0;                    // the current IRQ-mode stretch so far
+    bool ProfPrevIRQ = false;
     bool ProfHaltBios = false;             // the current halt started in the BIOS
     void ProfHalted(u64 cycles);           // ARM9 cycles skipped while halted
     bool ProfOn = false;
@@ -379,6 +397,29 @@ public:
     // call) by PC, indexed by (addr - ProfLo) / 2: what CPI the evaluation
     // gets (cycles per instruction, cache misses). A frontend sizes it.
     std::vector<ProfPCStat>* ProfIdlePCs = nullptr;
+    // Shadow caches (--profile with the cache model): the same caches fed only the game's
+    // accesses (code fetches outside [ProfLo, ProfHi), data accesses and cache maintenance by
+    // instructions outside it), with their own replacement counter. Without a module the
+    // shadow equals the real model; with one, the difference is the game's cost of sharing
+    // the caches with the module. Optional: the game's extra cycles by PC (code: the fetched
+    // line; data: the instruction) for attribution.
+    struct CacheShadow
+    {
+        u32 ITags[64*4]; u8 ICount[64];
+        u32 DTags[32*4]; u8 DCount[32];
+        u32 LastDLine; u32 Seed;
+    };
+    CacheShadow Shadow {};
+    bool ProfCurMod = false;               // the instruction executing is module code
+    bool ProfPrevIn = false;               // the last instruction was module code
+    // what-if (timing study only): module code fetches / module data accesses use only the cache
+    // sets in this mask (0: all), as if the module's hot code/data were laid out in those sets
+    u32 WhatIfISets = 0, WhatIfDSets = 0;
+    u32 ProfCurPC = 0;
+    struct ProfGamePC { s64 IExtra, DExtra; u64 PollI, PollD; };
+    std::map<u32, ProfGamePC>* ProfGamePCs = nullptr;
+    void ShadowReset();
+    bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
     u32 ProfPend[8] {};
     u32 ProfPendN = 0;
     CacheModelStats ProfPrevStats {};
@@ -482,6 +523,13 @@ public:
     void DataWrite32(u32 addr, u32 val) override;
     void DataWrite32S(u32 addr, u32 val) override;
     void AddCycles_C() override;
+    // Optional ARM7 profile (a frontend sets Prof7On): cycles per interval in total and in
+    // [Prof7Lo, Prof7Hi) (e.g. nds-bootstrap's ARM7 code), and cycles by 256-byte PC block
+    // (Prof7Blocks, indexed by (addr >> 8) & 0x3FFFF) over the whole run.
+    bool Prof7On = false;
+    u32 Prof7Lo = 0, Prof7Hi = 0;
+    u64 Prof7Busy = 0, Prof7Range = 0;
+    u64* Prof7Blocks = nullptr;
     void AddCycles_CI(s32 num) override;
     void AddCycles_CDI() override;
     void AddCycles_CD() override;
