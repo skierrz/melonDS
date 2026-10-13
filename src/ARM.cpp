@@ -666,6 +666,7 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (ProfOn) { ProfCurPC = profaddr; ProfCurMod = ProfInModule(profaddr); }
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
@@ -784,6 +785,12 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     }
     ProfPendN = 0;
     ProfPrevStats = CacheStats;
+    if (!in)
+    {
+        if (irq) Prof.GameIRQCycles += c;
+        else     Prof.GameCycles += c;
+        Prof.GameInstr++;
+    }
     if (in)
     {
         if (vbl) Prof.VBlank += c;
@@ -879,6 +886,7 @@ void ARMv4::Execute()
         else
 #endif
         {
+            const u32 prof7addr = R[15] - ((CPSR & 0x20) ? 2 : 4);
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
@@ -913,6 +921,13 @@ void ARMv4::Execute()
                 }
                 else
                     AddCycles_C();
+            }
+
+            if (Prof7On)
+            {
+                Prof7Busy += Cycles;
+                if (prof7addr >= Prof7Lo && prof7addr < Prof7Hi) Prof7Range += Cycles;
+                if (Prof7Blocks) Prof7Blocks[(prof7addr >> 8) & 0x3FFFF] += Cycles;
             }
 
             // TODO optimize this shit!!!

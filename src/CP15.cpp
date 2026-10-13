@@ -444,6 +444,7 @@ void ARMv5::ICacheInvalidateAll()
     for (int i = 0; i < 64*4; i++)
         ICacheTags[i] = 1;
     memset(CMITags, 0, sizeof(CMITags));
+    if (ProfOn && !ProfCurMod) memset(Shadow.ITags, 0, sizeof(Shadow.ITags));
 }
 
 
@@ -461,6 +462,29 @@ void ARMv5::CacheModelReset()
     memset(CMDCount, 0, sizeof(CMDCount));
     CMLastDLine = 0xFFFFFFFF;
     CacheStats = {};
+    ShadowReset();
+}
+
+void ARMv5::ShadowReset()
+{
+    memset(&Shadow, 0, sizeof(Shadow));
+    Shadow.LastDLine = 0xFFFFFFFF;
+    Shadow.Seed = RNGSeed;
+}
+
+// the shadow's victim choice: the same rule as the real one, on its own counter/seed
+static inline u32 ShadowVictim(ARMv5::CacheShadow& sh, u8* count, u32 set, bool roundrobin)
+{
+    if (roundrobin)
+    {
+        u32 way = count[set];
+        count[set] = (way + 1) & 3;
+        return way;
+    }
+    u32 s = sh.Seed;
+    sh.Seed ^= (s*17);
+    sh.Seed ^= (s*7);
+    return (sh.Seed >> 17) & 0x3;
 }
 
 static inline s32 CacheModelLineCost(NDS& nds, u32 addr)
@@ -482,6 +506,33 @@ static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrob
 
 s32 ARMv5::CacheModelCode(u32 addr)
 {
+    s32 cost = CacheModelCodeReal(addr);
+    if (!ProfOn || ProfInModule(addr)) return cost;
+    // a game fetch: the shadow I-cache
+    bool realmiss = cost != 1;
+    if (realmiss) Prof.GameIMiss++;
+    u32 line = addr & ~0x1F;
+    u32 set = (addr >> 5) & 0x3F;
+    u32* tags = &Shadow.ITags[set << 2];
+    s32 scost = 1;
+    bool hit = false;
+    for (int w = 0; w < 4; w++)
+        if ((tags[w] & ~0x1F) == line && (tags[w] & 1)) { hit = true; break; }
+    if (!hit)
+    {
+        tags[ShadowVictim(Shadow, Shadow.ICount, set, CP15Control & (1<<14))] = line | 1;
+        scost = CacheModelLineCost(NDS, addr);
+    }
+    s64 d = (s64)(cost - scost) << (2 - NDS.ARM9ClockShift);
+    Prof.GameIExtra += d;
+    if (realmiss && hit) Prof.PollI++;
+    if (!realmiss && !hit) Prof.RevI++;
+    if (ProfGamePCs && d) { auto& e = (*ProfGamePCs)[line]; e.IExtra += d; if (realmiss && hit) e.PollI++; }
+    return cost;
+}
+
+s32 ARMv5::CacheModelCodeReal(u32 addr)
+{
     u32 line = addr & ~0x1F;
     u32 set = (addr >> 5) & 0x3F;
     u32* tags = &CMITags[set << 2];
@@ -498,7 +549,62 @@ s32 ARMv5::CacheModelCode(u32 addr)
     return CacheModelLineCost(NDS, addr);
 }
 
+// the shadow D-cache for a game access: returns its cost and whether it missed (a read
+// line fill, or a write that went to memory); dirty write-backs counted in *wb
+static s32 ShadowData(ARMv5& cpu, NDS& nds, u32 addr, bool write, bool writeback, bool seq, s32 uncached, bool* miss, bool* wb)
+{
+    auto& sh = cpu.Shadow;
+    *miss = false; *wb = false;
+    u32 line = addr & ~0x1F;
+    if (seq && line == sh.LastDLine)
+        return 1;
+    sh.LastDLine = line;
+    u32 set = (addr >> 5) & 0x1F;
+    u32* tags = &sh.DTags[set << 2];
+    for (int w = 0; w < 4; w++)
+    {
+        if ((tags[w] & ~0x1F) == line && (tags[w] & 1))
+        {
+            if (!write) return 1;
+            if (writeback) { tags[w] |= 2; return 1; }
+            return uncached;
+        }
+    }
+    *miss = true;
+    if (write) return uncached;
+    u32 way = ShadowVictim(sh, sh.DCount, set, cpu.CP15Control & (1<<14));
+    s32 cost = CacheModelLineCost(nds, addr);
+    if ((tags[way] & 3) == 3)
+    {
+        *wb = true;
+        cost += CacheModelLineCost(nds, tags[way] & ~0x1F);
+    }
+    tags[way] = line | 1;
+    return cost;
+}
+
 s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached)
+{
+    if (!ProfOn || ProfCurMod) return CacheModelDataReal(addr, write, writeback, seq, uncached);
+    CacheModelStats before = CacheStats;
+    s32 cost = CacheModelDataReal(addr, write, writeback, seq, uncached);
+    bool realmiss = CacheStats.DReadMiss != before.DReadMiss || CacheStats.DWriteMiss != before.DWriteMiss;
+    Prof.GameDReadMiss += CacheStats.DReadMiss - before.DReadMiss;
+    Prof.GameDWriteMiss += CacheStats.DWriteMiss - before.DWriteMiss;
+    bool realwb = CacheStats.DWriteBack != before.DWriteBack;
+    if (realwb) Prof.GameDWriteBack++;
+    bool smiss, swb;
+    s32 scost = ShadowData(*this, NDS, addr, write, writeback, seq, uncached, &smiss, &swb);
+    s64 d = (s64)(cost - scost) << (2 - NDS.ARM9ClockShift);
+    Prof.GameDExtra += d;
+    if (realmiss && !smiss) Prof.PollD++;
+    if (!realmiss && smiss) Prof.RevD++;
+    if (realwb && !swb) Prof.PollWB++;
+    if (ProfGamePCs && d) { auto& e = (*ProfGamePCs)[ProfCurPC]; e.DExtra += d; if (realmiss && !smiss) e.PollD++; }
+    return cost;
+}
+
+s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s32 uncached)
 {
     u32 line = addr & ~0x1F;
     if (seq && line == CMLastDLine)
@@ -547,6 +653,13 @@ s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 un
 
 void ARMv5::CacheModelDInvalidateLine(u32 addr, bool clean)
 {
+    if (ProfOn && !ProfCurMod)
+    {
+        u32* st = &Shadow.DTags[((addr >> 5) & 0x1F) << 2];
+        for (int w = 0; w < 4; w++)
+            if ((st[w] & ~0x1F) == (addr & ~0x1F)) st[w] = 0;
+        Shadow.LastDLine = 0xFFFFFFFF;
+    }
     u32 line = addr & ~0x1F;
     u32* tags = &CMDTags[((addr >> 5) & 0x1F) << 2];
     for (int w = 0; w < 4; w++)
@@ -562,6 +675,7 @@ void ARMv5::CacheModelDInvalidateSetWay(u32 val, bool clean)
 {
     // set index in bits [9:5] for a 4 KB cache, way in bits [31:30]
     u32 idx = (((val >> 5) & 0x1F) << 2) | (val >> 30);
+    if (ProfOn && !ProfCurMod) { Shadow.DTags[idx] = 0; Shadow.LastDLine = 0xFFFFFFFF; }
     if (clean && (CMDTags[idx] & 3) == 3) CacheStats.DWriteBack++;
     CMDTags[idx] = 0;
     CMLastDLine = 0xFFFFFFFF;
@@ -569,6 +683,7 @@ void ARMv5::CacheModelDInvalidateSetWay(u32 val, bool clean)
 
 void ARMv5::CacheModelDInvalidateAll()
 {
+    if (ProfOn && !ProfCurMod) { memset(Shadow.DTags, 0, sizeof(Shadow.DTags)); Shadow.LastDLine = 0xFFFFFFFF; }
     memset(CMDTags, 0, sizeof(CMDTags));
     CMLastDLine = 0xFFFFFFFF;
 }
@@ -773,6 +888,8 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32& t = CMDTags[(((val >> 5) & 0x1F) << 2) + w];
             if ((t & ~0x1F) == (val & ~0x1F) && (t & 3) == 3) { t &= ~2; CacheStats.DWriteBack++; }
+            u32& st = Shadow.DTags[(((val >> 5) & 0x1F) << 2) + w];
+            if (ProfOn && !ProfCurMod && (st & ~0x1F) == (val & ~0x1F)) st &= ~2;
         }
         return;
     case 0x7A2:
@@ -780,6 +897,7 @@ void ARMv5::CP15Write(u32 id, u32 val)
         {
             u32& t = CMDTags[(((val >> 5) & 0x1F) << 2) | (val >> 30)];
             if ((t & 3) == 3) { t &= ~2; CacheStats.DWriteBack++; }
+            if (ProfOn && !ProfCurMod) Shadow.DTags[(((val >> 5) & 0x1F) << 2) | (val >> 30)] &= ~2;
         }
         return;
 
