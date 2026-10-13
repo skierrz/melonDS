@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <optional>
 #include <map>
+#include <vector>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -373,6 +374,10 @@ public:
     struct ProfPCStat { u64 Cycles, Count, IMiss, DReadMiss, DWriteMiss; };
     std::map<u32, ProfPCStat>* ProfPCs = nullptr;
     std::map<u32, u64>* ProfDMiss = nullptr;
+    // Optional: the module's idle work (PC in the module, not the VBlank
+    // call) by PC, indexed by (addr - ProfLo) / 2: what CPI the evaluation
+    // gets (cycles per instruction, cache misses). A frontend sizes it.
+    std::vector<ProfPCStat>* ProfIdlePCs = nullptr;
     u32 ProfPend[8] {};
     u32 ProfPendN = 0;
     CacheModelStats ProfPrevStats {};

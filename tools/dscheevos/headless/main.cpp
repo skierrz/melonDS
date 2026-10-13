@@ -75,6 +75,8 @@ bool cachefromgame = false; // --cache-model-from-game
 std::string pcspath;        // --profile-pcs
 std::map<u32, ARMv5::ProfPCStat> pcs;
 std::map<u32, u64> dmiss;
+std::string idlepcspath;    // --profile-idle-pcs
+std::vector<ARMv5::ProfPCStat> idlepcs;
 
 static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->MainRAMMask & ~3u], 4); return v; }
 
@@ -111,6 +113,7 @@ static void on_vblank(ARMv5& cpu)
                 cpu.CacheModel = true;
             }
             if (!pcspath.empty()) { cpu.ProfPCs = &pcs; cpu.ProfDMiss = &dmiss; cpu.ProfPrevStats = cpu.CacheStats; }
+            if (!idlepcspath.empty()) { idlepcs.assign(0x80000 / 2, {}); cpu.ProfIdlePCs = &idlepcs; cpu.ProfPrevStats = cpu.CacheStats; }
         }
     }
     else if (!done)
@@ -131,7 +134,7 @@ static void on_vblank(ARMv5& cpu)
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
-            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr;
+            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr;
         }
     }
     p.VBlank = p.Idle = p.IRQMode = p.Busy = p.Halted = p.HaltedBios = 0;
@@ -307,6 +310,7 @@ static void usage()
         "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
+        "  --profile-idle-pcs FILE  with --profile: the module's idle work by PC (count, cycles, cache misses)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
@@ -375,6 +379,7 @@ int main(int argc, char** argv)
         else if (a == "--script-from-game") scriptfromgame = true;
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
+        else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
         else if (a == "--trace-io") traceio = next();
@@ -750,6 +755,23 @@ int main(int argc, char** argv)
                                  a & ~3u, (unsigned long long)n);
                 std::fclose(pf);
             }
+        }
+    }
+    if (profile && !prof::idlepcspath.empty())
+    {
+        FILE* pf = std::fopen(prof::idlepcspath.c_str(), "w");
+        if (pf)
+        {
+            std::fprintf(pf, "kind,addr,count,cycles,imiss,dreadmiss,dwritemiss\n");
+            for (size_t i = 0; i < prof::idlepcs.size(); i++)
+            {
+                auto& e = prof::idlepcs[i];
+                if (e.Count)
+                    std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu\n", prof::base + (u32)i * 2, (unsigned long long)e.Count,
+                                 (unsigned long long)e.Cycles, (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss,
+                                 (unsigned long long)e.DWriteMiss);
+            }
+            std::fclose(pf);
         }
     }
     g_net = nullptr;

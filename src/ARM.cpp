@@ -767,6 +767,18 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
         e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
         for (u32 i = 0; i < ProfPendN; i++) (*ProfDMiss)[ProfPend[i]]++;
     }
+    if (ProfIdlePCs && in && !vbl && !irq)
+    {
+        u32 i = (addr - ProfLo) >> 1;
+        if (i < ProfIdlePCs->size())
+        {
+            auto& e = (*ProfIdlePCs)[i];
+            e.Cycles += c; e.Count++;
+            e.IMiss += CacheStats.IMiss - ProfPrevStats.IMiss;
+            e.DReadMiss += CacheStats.DReadMiss - ProfPrevStats.DReadMiss;
+            e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
+        }
+    }
     ProfPendN = 0;
     ProfPrevStats = CacheStats;
     if (in)
