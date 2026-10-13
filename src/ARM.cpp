@@ -917,6 +917,7 @@ void ARMv4::Execute()
         }
         else
         {
+            if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target) HaltedCycles += NDS.ARM7Target - NDS.ARM7Timestamp;
             NDS.ARM7Timestamp = NDS.ARM7Target;
             return;
         }
@@ -1005,6 +1006,7 @@ void ARMv4::Execute()
             {
                 if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
                 {
+                    HaltedCycles += NDS.ARM7Target - NDS.ARM7Timestamp;
                     NDS.ARM7Timestamp = NDS.ARM7Target;
                 }
                 break;

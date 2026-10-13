@@ -491,6 +491,7 @@ protected:
 class ARMv4 : public ARM
 {
 public:
+    u64 HaltedCycles = 0;                  // ARM7 cycles skipped while halted (interpreter), for the census
     ARMv4(melonDS::NDS& nds, std::optional<GDBArgs> gdb, bool jit);
 
     void FillPipeline() override;
