@@ -182,7 +182,7 @@ static void report(NDS& nds)
 }
 
 // --wait-census PREFIX: where the ARM9 waits, from the VBlank where the game's
-// header (game code --census-code) is at 0x027FFE00 (the bootloader may still
+// header (game code --census-code) is at 0x027FFE00 or 0x02FFFE00 (the bootloader may still
 // run for a few frames): PREFIX.frames.csv (per interval: busy, halted by kind),
 // PREFIX.sites.csv (each halt site: kind, PC, LR, halts, cycles), PREFIX.hot.csv
 // (PC samples while running), PREFIX.io.csv (PCs reading DISPSTAT/VCOUNT/IE/IF).
@@ -204,7 +204,7 @@ static void on_vblank(ARMv5& cpu)
     auto& p = cpu.Prof;
     if (startframe < 0)
     {
-        if (prof::ram32(0x027FFE0C) == code)
+        if (prof::ram32(0x027FFE0C) == code || prof::ram32(0x02FFFE0C) == code)
         {
             startframe = hl::frame;
             cpu.CensusOn = true;
