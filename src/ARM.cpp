@@ -832,7 +832,15 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
                 if (oshalt && !ProfHaltEntry)
                 {
                     u32 lr = R[14];
-                    bool idle = (lr & 1) ? NDS.ARM9Read16(lr & ~1u) == 0xE7FC : NDS.ARM9Read32(lr) == 0xEAFFFFFD;
+                    // read through the TCMs like the CPU would (the SDK may run OS_Halt from ITCM)
+                    auto rd = [&](u32 a, int n) -> u32 {
+                        u32 v = 0;
+                        if (a < ITCMSize) std::memcpy(&v, &ITCM[a & (ITCMPhysicalSize - 1)], n);
+                        else if ((a & DTCMMask) == DTCMBase) std::memcpy(&v, &DTCM[a & (DTCMPhysicalSize - 1)], n);
+                        else v = n == 2 ? NDS.ARM9Read16(a) : NDS.ARM9Read32(a);
+                        return v;
+                    };
+                    bool idle = (lr & 1) ? rd(lr & ~1u, 2) == 0xE7FC : rd(lr, 4) == 0xEAFFFFFD;
                     if (!idle) CensusKind = 3;
                 }
             }
