@@ -420,6 +420,20 @@ public:
     std::map<u32, ProfGamePC>* ProfGamePCs = nullptr;
     void ShadowReset();
     bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
+    // Optional: the idle work by role (--profile-idle-roles). ProfRoleOf maps a
+    // function entry ((addr - ProfLo) / 2) to a role (0: none); a call to one
+    // pushes a shadow frame (its return address) and its cycles, and those of
+    // whatever it calls that has no role of its own, go to that role until the
+    // return address runs. Only on the module's idle stack (one pass at a time):
+    // other module code in idle (halt_entry before the stack switch) is role 1.
+    // ProfRoles[r]: cycles, instructions, cache misses; Count: calls.
+    std::vector<u16>* ProfRoleOf = nullptr;
+    std::vector<ProfPCStat>* ProfRoles = nullptr;
+    std::vector<u64>* ProfRoleCalls = nullptr;
+    u32 ProfIdleStackLo = 0, ProfIdleStackHi = 0;
+    struct ProfRoleFrame { u32 Ret, Fn; u16 Role; };
+    ProfRoleFrame ProfRoleStack[64] {};
+    u32 ProfRoleDepth = 0;
     u32 ProfPend[8] {};
     u32 ProfPendN = 0;
     CacheModelStats ProfPrevStats {};

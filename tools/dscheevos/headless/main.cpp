@@ -86,6 +86,31 @@ std::vector<u64> arm7blocks;
 u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
 s64 giextra = 0, gdextra = 0;
 u64 polli = 0, polld = 0, pollwb = 0, revi = 0, revd = 0, a7busy = 0, a7range = 0, a7rangemax = 0;
+std::string rolespath;      // --profile-idle-roles
+std::vector<std::string> rolenames { "(no role)", "(halt_entry on the game stack)" };
+std::vector<u16> roleof;
+std::vector<ARMv5::ProfPCStat> roles;
+std::vector<u64> rolecalls;
+// "ADDR NAME" per line: a call to the function at ADDR runs as role NAME. The
+// first name is the root (module_idle): its call starts a fresh shadow stack.
+static void load_roles()
+{
+    roleof.assign(0x80000 / 2, 0);
+    FILE* f = std::fopen(rolespath.c_str(), "r");
+    if (!f) { std::fprintf(stderr, "[prof] no roles file %s\n", rolespath.c_str()); return; }
+    char name[128]; unsigned addr;
+    while (std::fscanf(f, "%x %127s", &addr, name) == 2)
+    {
+        size_t r = 0;
+        while (r < rolenames.size() && rolenames[r] != name) r++;
+        if (r == rolenames.size()) rolenames.push_back(name);
+        u32 i = ((addr & ~1u) - base) >> 1;
+        if (i < roleof.size()) roleof[i] = (u16)r;
+    }
+    std::fclose(f);
+    roles.assign(rolenames.size(), {});
+    rolecalls.assign(rolenames.size(), 0);
+}
 
 static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->MainRAMMask & ~3u], 4); return v; }
 
@@ -130,6 +155,13 @@ static void on_vblank(ARMv5& cpu)
                 a7.Prof7On = true; a7.Prof7Lo = arm7lo; a7.Prof7Hi = arm7hi;
                 if (!arm7path.empty()) { arm7blocks.assign(0x40000, 0); a7.Prof7Blocks = arm7blocks.data(); }
             }
+            if (!rolespath.empty())
+            {
+                load_roles();
+                cpu.ProfRoleOf = &roleof; cpu.ProfRoles = &roles; cpu.ProfRoleCalls = &rolecalls; cpu.ProfRoleDepth = 0;
+                cpu.ProfIdleStackLo = base + 0x200000 - 0x2000; cpu.ProfIdleStackHi = base + 0x200000;
+                cpu.ProfPrevStats = cpu.CacheStats;
+            }
         }
     }
     else if (!done)
@@ -165,7 +197,7 @@ static void on_vblank(ARMv5& cpu)
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
-            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr;
+            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr; cpu.ProfRoles = nullptr;
             nds->ARM7.Prof7Blocks = nullptr;
         }
     }
@@ -383,6 +415,9 @@ static void usage()
         "  --profile-arm7-range LO:HI  with --profile: ARM7 cycles per interval with the PC in [LO, HI)\n"
         "  --whatif-module-isets MASK / --whatif-module-dsets MASK  timing study: the module's code fetches /\n"
         "                       data accesses use only cache sets (set & MASK), as if laid out in them\n"
+        "  --profile-idle-roles FILE  with --profile: the idle work by role; FILE has \"ADDR NAME\" lines (a call to\n"
+        "                       the function at ADDR runs as NAME, callees included unless they have a role;\n"
+        "                       the first name is module_idle, the root); writes FILE.csv\n"
         "  --thumb-cycle        ARM9: charge 1 cycle for a Thumb instruction in the upper half of a fetched\n"
         "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
@@ -461,6 +496,7 @@ int main(int argc, char** argv)
         else if (a == "--profile-arm7") { prof::arm7 = true; prof::arm7path = next(); }
         else if (a == "--profile-arm7-range") { std::string v = next(); size_t c = v.find(':'); prof::arm7 = true;
             prof::arm7lo = std::stoul(v.substr(0, c), nullptr, 0); prof::arm7hi = std::stoul(v.substr(c + 1), nullptr, 0); }
+        else if (a == "--profile-idle-roles") prof::rolespath = next();
         else if (a == "--thumb-cycle") thumbcycle = true;
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
@@ -881,6 +917,22 @@ int main(int argc, char** argv)
                     std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu\n", prof::base + (u32)i * 2, (unsigned long long)e.Count,
                                  (unsigned long long)e.Cycles, (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss,
                                  (unsigned long long)e.DWriteMiss);
+            }
+            std::fclose(pf);
+        }
+    }
+    if (profile && !prof::rolespath.empty() && !prof::roles.empty())
+    {
+        FILE* pf = std::fopen((prof::rolespath + ".csv").c_str(), "w");
+        if (pf)
+        {
+            std::fprintf(pf, "role,calls,count,cycles,imiss,dreadmiss,dwritemiss,frames\n");
+            for (size_t r = 0; r < prof::roles.size(); r++)
+            {
+                auto& e = prof::roles[r];
+                std::fprintf(pf, "%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", prof::rolenames[r].c_str(), (unsigned long long)prof::rolecalls[r],
+                             (unsigned long long)e.Count, (unsigned long long)e.Cycles, (unsigned long long)e.IMiss,
+                             (unsigned long long)e.DReadMiss, (unsigned long long)e.DWriteMiss, (unsigned long long)prof::n);
             }
             std::fclose(pf);
         }

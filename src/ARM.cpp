@@ -783,6 +783,35 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
             e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
         }
     }
+    if (ProfRoles && in && !vbl && !irq)
+    {
+        u16 role = 1;
+        if (R[13] > ProfIdleStackLo && R[13] <= ProfIdleStackHi)
+        {
+            // returns first: the instruction at a frame's return address ran
+            while (ProfRoleDepth && ProfRoleStack[ProfRoleDepth - 1].Ret == addr)
+                ProfRoleDepth--;
+            u32 i = (addr - ProfLo) >> 1;
+            u16 r = i < ProfRoleOf->size() ? (*ProfRoleOf)[i] : 0;
+            if (r)
+            {
+                u32 ret = R[14] & ~1u;
+                const ProfRoleFrame* top = ProfRoleDepth ? &ProfRoleStack[ProfRoleDepth - 1] : nullptr;
+                if (!(top && top->Fn == addr && top->Ret == ret))   // a loop back to the entry
+                {
+                    if (r == 2) ProfRoleDepth = 0;          // role 2: the root (module_idle)
+                    if (ProfRoleDepth < 64) ProfRoleStack[ProfRoleDepth++] = { ret, addr, r };
+                    (*ProfRoleCalls)[r]++;
+                }
+            }
+            role = ProfRoleDepth ? ProfRoleStack[ProfRoleDepth - 1].Role : 0;
+        }
+        auto& e = (*ProfRoles)[role];
+        e.Cycles += c; e.Count++;
+        e.IMiss += CacheStats.IMiss - ProfPrevStats.IMiss;
+        e.DReadMiss += CacheStats.DReadMiss - ProfPrevStats.DReadMiss;
+        e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
+    }
     ProfPendN = 0;
     ProfPrevStats = CacheStats;
     if (!in)
