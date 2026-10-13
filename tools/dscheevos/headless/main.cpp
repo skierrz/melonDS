@@ -206,13 +206,13 @@ static void on_vblank(ARMv5& cpu)
     else if (stopafter >= 0 && hl::frame - startframe >= stopafter)
         done = true;
     else if (frames)
-        std::fprintf(frames, "%ld,%llu,%llu,%llu,%llu,%llu,%08x,%d,%x,%llu\n", hl::frame - startframe, (unsigned long long)p.Busy,
+        std::fprintf(frames, "%ld,%llu,%llu,%llu,%llu,%llu,%08x,%d,%x,%llu,%llu\n", hl::frame - startframe, (unsigned long long)p.Busy,
                      (unsigned long long)p.Halted, (unsigned long long)cpu.CensusHalted[0], (unsigned long long)cpu.CensusHalted[1],
                      (unsigned long long)cpu.CensusHalted[2], cpu.R[15], cpu.CensusSeqLine, cpu.CensusSeqLine >= 0 ? cpu.CensusSeqKind : 0,
-                     (unsigned long long)(cpu.CensusSeqLine >= 0 ? cpu.CensusSeqRun : 0));
+                     (unsigned long long)(cpu.CensusSeqLine >= 0 ? cpu.CensusSeqRun : 0), (unsigned long long)cpu.CensusHalted[3]);
     // a halt going on now continues the run into the next interval only from line 0
     cpu.CensusSeqLine = cpu.CensusInHalt ? 0 : -1; cpu.CensusSeqRun = 0;
-    cpu.CensusHalted[0] = cpu.CensusHalted[1] = cpu.CensusHalted[2] = 0;
+    cpu.CensusHalted[0] = cpu.CensusHalted[1] = cpu.CensusHalted[2] = cpu.CensusHalted[3] = 0;
     if (profile) prof::on_vblank(cpu);
     else
     {
@@ -590,7 +590,7 @@ int main(int argc, char** argv)
         nds->ARM9.ProfVBlank = census::on_vblank;
         census::frames = std::fopen((census::prefix + ".frames.csv").c_str(), "w");
         if (!census::frames) { std::fprintf(stderr, "cannot write %s.frames.csv\n", census::prefix.c_str()); return 2; }
-        std::fprintf(census::frames, "frame,busy,halted,halted_oshalt,halted_bios,halted_other,arm9_pc,wait_line,wait_kind,wait_run\n");
+        std::fprintf(census::frames, "frame,busy,halted,halted_oshalt,halted_bios,halted_other,arm9_pc,wait_line,wait_kind,wait_run,halted_oshalt_other\n");
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile && census::prefix.empty()) usage();
 
@@ -658,7 +658,8 @@ int main(int argc, char** argv)
         u32 held = keys;
         int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
-        long gamestart = !census::prefix.empty() ? census::startframe : prof::startframe;
+        // with --profile, script time counts from the first OS_Halt call even with --wait-census
+        long gamestart = !census::prefix.empty() && !profile ? census::startframe : prof::startframe;
         long st = !scriptfromgame ? f : gamestart >= 0 ? f - gamestart : -1;
         for (auto& p : script)
         {
