@@ -24,6 +24,7 @@
 #include <map>
 #include <vector>
 #include <tuple>
+#include <vector>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -412,6 +413,12 @@ public:
     std::map<u32, u64>* CensusHot = nullptr;            // PC & ~3 -> samples
     std::map<u64, u64>* CensusIO = nullptr;             // (reg << 32 | pc) -> reads
     void CensusIORead(u32 addr);
+    // with the cache model: how many of the lines in CensusWatch (sorted line
+    // addresses) are dirty in the data cache now
+    std::vector<u32> CensusWatch;
+    u32 CensusDirtyAtWait = 0xFFFFFFFF;    // dirty watched lines at this interval's first wait (none yet: ~0)
+    std::vector<u32>* CensusDirtyHits = nullptr;   // per watched line: intervals it was dirty at VBlank
+    u32 CensusDirtyNow(std::vector<u32>* hits);
 
     void CP15Write(u32 id, u32 val);
     u32 CP15Read(u32 id) const;

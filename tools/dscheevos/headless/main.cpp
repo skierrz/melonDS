@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <string>
 #include <map>
+#include <set>
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -198,6 +199,9 @@ std::map<std::tuple<u32, u32, u32>, ARMv5::CensusSite> sites;
 std::map<u32, u64> hot;
 std::map<u64, u64> io;
 bool profile = false;       // --profile too: chain its VBlank callback
+std::string dirtypath;      // --dirty-watch: watched addresses (hex, one per line)
+FILE* dirty = nullptr;
+std::vector<u32> dirtyhits;
 
 static void on_vblank(ARMv5& cpu)
 {
@@ -221,6 +225,13 @@ static void on_vblank(ARMv5& cpu)
                      (unsigned long long)(cpu.CensusSeqLine >= 0 ? cpu.CensusSeqRun : 0), (unsigned long long)cpu.CensusHalted[3]);
     // a halt going on now continues the run into the next interval only from line 0
     cpu.CensusSeqLine = cpu.CensusInHalt ? 0 : -1; cpu.CensusSeqRun = 0;
+    if (dirty && startframe >= 0 && !done)
+    {
+        u32 atwait = cpu.CensusDirtyAtWait;
+        std::fprintf(dirty, "%ld,%zu,%u,%d\n", hl::frame - startframe, cpu.CensusWatch.size(), cpu.CensusDirtyNow(&dirtyhits),
+                     atwait == 0xFFFFFFFF ? -1 : (int)atwait);
+    }
+    cpu.CensusDirtyAtWait = 0xFFFFFFFF;
     cpu.CensusHalted[0] = cpu.CensusHalted[1] = cpu.CensusHalted[2] = cpu.CensusHalted[3] = 0;
     if (profile) prof::on_vblank(cpu);
     else
@@ -230,7 +241,7 @@ static void on_vblank(ARMv5& cpu)
     }
 }
 
-static void write()
+static void write(NDS* nds)
 {
     if (frames) std::fclose(frames);
     if (FILE* f = std::fopen((prefix + ".sites.csv").c_str(), "w"))
@@ -252,6 +263,17 @@ static void write()
         std::fprintf(f, "reg,pc,reads\n");
         for (auto& [k, v] : io) std::fprintf(f, "%08x,%08x,%llu\n", (u32)(k >> 32), (u32)k, (unsigned long long)v);
         std::fclose(f);
+    }
+    if (dirty)
+    {
+        std::fclose(dirty);
+        if (FILE* f = std::fopen((prefix + ".dirtylines.csv").c_str(), "w"))
+        {
+            std::fprintf(f, "line,dirty_at_vblank\n");
+            for (size_t i = 0; i < dirtyhits.size(); i++)
+                std::fprintf(f, "%08x,%u\n", nds->ARM9.CensusWatch[i], dirtyhits[i]);
+            std::fclose(f);
+        }
     }
     std::fprintf(stderr, "[census] %s from frame %ld\n", startframe >= 0 ? "counted" : "game never seen, nothing counted", startframe);
 }
@@ -397,6 +419,8 @@ static void usage()
         "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
         "  --wait-census PREFIX where the ARM9 waits (halt sites, PC samples, IO polling), from the game's start\n"
+        "  --dirty-watch FILE   with --wait-census and the cache model: per interval, how many watched lines\n"
+        "                       (hex addresses, one per line) are dirty in the D-cache at VBlank and at the first wait\n"
         "  --census-frames N    with --wait-census: stop N VBlanks after the game's start\n"
         "  --census-code CODE   the game's 4-letter code (for --wait-census); --script-from-game then counts from there\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
@@ -466,6 +490,7 @@ int main(int argc, char** argv)
         else if (a == "--script-from-game") scriptfromgame = true;
         else if (a == "--wait-census") census::prefix = next();
         else if (a == "--census-frames") census::stopafter = std::stol(next());
+        else if (a == "--dirty-watch") census::dirtypath = next();
         else if (a == "--census-code") { std::string c = next(); if (c.size() == 4) std::memcpy(&census::code, c.data(), 4); }
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
@@ -634,6 +659,20 @@ int main(int argc, char** argv)
         census::frames = std::fopen((census::prefix + ".frames.csv").c_str(), "w");
         if (!census::frames) { std::fprintf(stderr, "cannot write %s.frames.csv\n", census::prefix.c_str()); return 2; }
         std::fprintf(census::frames, "frame,busy,halted,halted_oshalt,halted_bios,halted_other,arm9_pc,wait_line,wait_kind,wait_run,halted_oshalt_other\n");
+        if (!census::dirtypath.empty())
+        {
+            FILE* wf = std::fopen(census::dirtypath.c_str(), "r");
+            if (!wf) { std::fprintf(stderr, "cannot open %s\n", census::dirtypath.c_str()); return 2; }
+            std::set<u32> lines;
+            char ln[64];
+            while (std::fgets(ln, sizeof ln, wf))
+                if (ln[0] != '#') lines.insert((u32)std::strtoul(ln, nullptr, 16) & ~0x1Fu);
+            std::fclose(wf);
+            nds->ARM9.CensusWatch.assign(lines.begin(), lines.end());
+            census::dirtyhits.assign(lines.size(), 0);
+            census::dirty = std::fopen((census::prefix + ".dirty.csv").c_str(), "w");
+            std::fprintf(census::dirty, "frame,watched_lines,dirty_at_vblank,dirty_at_first_wait\n");
+        }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile && census::prefix.empty()) usage();
 
@@ -880,7 +919,7 @@ int main(int argc, char** argv)
             std::fclose(pf);
         }
     }
-    if (!census::prefix.empty()) census::write();
+    if (!census::prefix.empty()) census::write(nds.get());
     g_net = nullptr;
     std::fprintf(stderr, "[runner] %ld frames, %s\n", f,
                  hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : prof::done ? "profile frames done" : census::done ? "census frames done" : "frame limit");

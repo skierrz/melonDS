@@ -757,6 +757,24 @@ void ARMv5::ProfHalted(u64 cycles)
     }
 }
 
+u32 ARMv5::CensusDirtyNow(std::vector<u32>* hits)
+{
+    u32 n = 0;
+    for (size_t i = 0; i < CensusWatch.size(); i++)
+    {
+        u32 line = CensusWatch[i];
+        u32* tags = &CMDTags[((line >> 5) & 0x1F) << 2];
+        for (int w = 0; w < 4; w++)
+            if ((tags[w] & ~0x1F) == line && (tags[w] & 3) == 3)
+            {
+                n++;
+                if (hits) (*hits)[i]++;
+                break;
+            }
+    }
+    return n;
+}
+
 void ARMv5::CensusIORead(u32 addr)
 {
     if (CensusIO && (addr == 0x04000004 || addr == 0x04000006 || addr == 0x04000210 || addr == 0x04000214))
@@ -846,6 +864,7 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
             }
             if (CensusSites) (*CensusSites)[{CensusKind, CensusPC, CensusLR}].Count++;
             if (CensusSeqLine < 0) { CensusSeqLine = NDS.GPU.VCount; CensusSeqKind = CensusKind; CensusSeqRun = 0; }
+            if (CensusDirtyAtWait == 0xFFFFFFFF && !CensusWatch.empty()) CensusDirtyAtWait = CensusDirtyNow(nullptr);
         }
         else if (Halted != 1)
         {
