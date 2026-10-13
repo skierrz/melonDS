@@ -76,6 +76,9 @@ std::string pcspath;        // --profile-pcs
 std::map<u32, ARMv5::ProfPCStat> pcs;
 std::map<u32, u64> dmiss;
 std::string idlepcspath;    // --profile-idle-pcs
+std::string bootpcspath;    // --profile-boot-pcs
+std::vector<ARMv5::ProfPCStat> bootpcs;
+bool bootarmed = false;
 std::vector<ARMv5::ProfPCStat> idlepcs;
 std::string gamepcspath;    // --profile-game-pcs
 std::map<u32, ARMv5::ProfGamePC> gamepcs;
@@ -132,15 +135,39 @@ static void find_module(ARMv5& cpu)
         cpu.ProfLo = cpu.ProfHi = cpu.ProfHaltEntry = cpu.ProfVBlankLo = cpu.ProfVBlankHi = cpu.ProfIrqStackLo = cpu.ProfIrqStackHi = 0;
 }
 
+static void write_pcs(const std::string& path, const std::vector<ARMv5::ProfPCStat>& v)
+{
+    FILE* pf = std::fopen(path.c_str(), "w");
+    if (!pf) return;
+    std::fprintf(pf, "kind,addr,count,cycles,imiss,dreadmiss,dwritemiss\n");
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        auto& e = v[i];
+        if (e.Count)
+            std::fprintf(pf, "pc,%08x,%llu,%llu,%llu,%llu,%llu\n", base + (u32)i * 2, (unsigned long long)e.Count,
+                         (unsigned long long)e.Cycles, (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss,
+                         (unsigned long long)e.DWriteMiss);
+    }
+    std::fclose(pf);
+}
+
 static void on_vblank(ARMv5& cpu)
 {
     auto& p = cpu.Prof;
     if (startframe < 0)
     {
         before += p.VBlank + p.Idle;
+        if (!bootpcspath.empty() && !bootarmed && cpu.ProfHi > cpu.ProfLo)
+        {
+            // the module is loaded: its work until the game's first OS_Halt (the set's load) by PC
+            bootpcs.assign(0x80000 / 2, {});
+            cpu.ProfIdlePCs = &bootpcs; cpu.ProfPrevStats = cpu.CacheStats;
+            bootarmed = true;
+        }
         if (p.Halts)
         {
             startframe = hl::frame;
+            if (bootarmed) { write_pcs(bootpcspath, bootpcs); cpu.ProfIdlePCs = nullptr; }
             if (cachefromgame)
             {
                 cpu.CacheModelReset();
@@ -408,6 +435,7 @@ static void usage()
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
         "  --profile-idle-pcs FILE  with --profile: the module's idle work by PC (count, cycles, cache misses)\n"
+        "  --profile-boot-pcs FILE  with --profile: the module's work before the game's first OS_Halt (its load), by PC\n"
         "  --profile-game-pcs FILE  with --profile and the cache model: the game's extra cycles from sharing the\n"
         "                       caches with the module, by fetched code line and by data-access PC (CSV)\n"
         "  --profile-arm7 FILE  with --profile: ARM7 cycles by 256-byte PC block from the game's start (CSV);\n"
@@ -490,6 +518,7 @@ int main(int argc, char** argv)
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
+        else if (a == "--profile-boot-pcs") prof::bootpcspath = next();
         else if (a == "--profile-game-pcs") prof::gamepcspath = next();
         else if (a == "--whatif-module-isets") whatifi = std::stoul(next(), nullptr, 0);
         else if (a == "--whatif-module-dsets") whatifd = std::stoul(next(), nullptr, 0);
