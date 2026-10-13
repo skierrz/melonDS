@@ -181,6 +181,82 @@ static void report(NDS& nds)
 }
 }
 
+// --wait-census PREFIX: where the ARM9 waits, from the VBlank where the game's
+// header (game code --census-code) is at 0x027FFE00 (the bootloader may still
+// run for a few frames): PREFIX.frames.csv (per interval: busy, halted by kind),
+// PREFIX.sites.csv (each halt site: kind, PC, LR, halts, cycles), PREFIX.hot.csv
+// (PC samples while running), PREFIX.io.csv (PCs reading DISPSTAT/VCOUNT/IE/IF).
+namespace census
+{
+std::string prefix;
+u32 code = 0;
+long startframe = -1;
+long stopafter = -1;        // --census-frames
+bool done = false;
+FILE* frames = nullptr;
+std::map<std::tuple<u32, u32, u32>, ARMv5::CensusSite> sites;
+std::map<u32, u64> hot;
+std::map<u64, u64> io;
+bool profile = false;       // --profile too: chain its VBlank callback
+
+static void on_vblank(ARMv5& cpu)
+{
+    auto& p = cpu.Prof;
+    if (startframe < 0)
+    {
+        if (prof::ram32(0x027FFE0C) == code)
+        {
+            startframe = hl::frame;
+            cpu.CensusOn = true;
+            cpu.CensusSites = &sites; cpu.CensusHot = &hot; cpu.CensusIO = &io;
+            std::fprintf(stderr, "[census] game header at frame %ld, ARM9 pc %08x\n", hl::frame, cpu.R[15]);
+        }
+    }
+    else if (stopafter >= 0 && hl::frame - startframe >= stopafter)
+        done = true;
+    else if (frames)
+        std::fprintf(frames, "%ld,%llu,%llu,%llu,%llu,%llu,%08x,%d,%x,%llu\n", hl::frame - startframe, (unsigned long long)p.Busy,
+                     (unsigned long long)p.Halted, (unsigned long long)cpu.CensusHalted[0], (unsigned long long)cpu.CensusHalted[1],
+                     (unsigned long long)cpu.CensusHalted[2], cpu.R[15], cpu.CensusSeqLine, cpu.CensusSeqLine >= 0 ? cpu.CensusSeqKind : 0,
+                     (unsigned long long)(cpu.CensusSeqLine >= 0 ? cpu.CensusSeqRun : 0));
+    // a halt going on now continues the run into the next interval only from line 0
+    cpu.CensusSeqLine = cpu.CensusInHalt ? 0 : -1; cpu.CensusSeqRun = 0;
+    cpu.CensusHalted[0] = cpu.CensusHalted[1] = cpu.CensusHalted[2] = 0;
+    if (profile) prof::on_vblank(cpu);
+    else
+    {
+        p.VBlank = p.Idle = p.IRQMode = p.Busy = p.Halted = p.HaltedBios = 0;
+        p.IdleArrivals = 0;
+    }
+}
+
+static void write()
+{
+    if (frames) std::fclose(frames);
+    if (FILE* f = std::fopen((prefix + ".sites.csv").c_str(), "w"))
+    {
+        std::fprintf(f, "kind,pc,lr,halts,cycles\n");
+        for (auto& [k, v] : sites)
+            std::fprintf(f, "%x,%08x,%08x,%llu,%llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k),
+                         (unsigned long long)v.Count, (unsigned long long)v.Cycles);
+        std::fclose(f);
+    }
+    if (FILE* f = std::fopen((prefix + ".hot.csv").c_str(), "w"))
+    {
+        std::fprintf(f, "pc,samples\n");
+        for (auto& [k, v] : hot) std::fprintf(f, "%08x,%llu\n", k, (unsigned long long)v);
+        std::fclose(f);
+    }
+    if (FILE* f = std::fopen((prefix + ".io.csv").c_str(), "w"))
+    {
+        std::fprintf(f, "reg,pc,reads\n");
+        for (auto& [k, v] : io) std::fprintf(f, "%08x,%08x,%llu\n", (u32)(k >> 32), (u32)k, (unsigned long long)v);
+        std::fclose(f);
+    }
+    std::fprintf(stderr, "[census] %s from frame %ld\n", startframe >= 0 ? "counted" : "game never seen, nothing counted", startframe);
+}
+}
+
 // --watch-write: bus writes to a main RAM range (the first 40 printed, all counted).
 // --watch-skip LO:SIZE: leave out ARM9 writes from code in that range (e.g. the
 // module writing its own memory); a summary per writer is printed at the end.
@@ -320,6 +396,9 @@ static void usage()
         "  --thumb-cycle        ARM9: charge 1 cycle for a Thumb instruction in the upper half of a fetched\n"
         "                       word (stock melonDS charges 0, so Thumb code runs up to twice too fast)\n"
         "  --script-from-game   --script frames count from the game's first OS_Halt call (needs --profile)\n"
+        "  --wait-census PREFIX where the ARM9 waits (halt sites, PC samples, IO polling), from the game's start\n"
+        "  --census-frames N    with --wait-census: stop N VBlanks after the game's start\n"
+        "  --census-code CODE   the game's 4-letter code (for --wait-census); --script-from-game then counts from there\n"
         "  --cache-model-from-game  like --cache-model, switched on at the game's first OS_Halt call\n"
         "                       (needs --profile; nds-bootstrap's boot hangs with the cache model on)\n"
         "  --watch-write ADDR:SIZE  DSi mode: print bus writes (CPU or DMA) to [ADDR, ADDR+SIZE) with the\n"
@@ -385,6 +464,9 @@ int main(int argc, char** argv)
         else if (a == "--profile-frames") prof::stopafter = std::stol(next());
         else if (a == "--profile-log") proflog = next();
         else if (a == "--script-from-game") scriptfromgame = true;
+        else if (a == "--wait-census") census::prefix = next();
+        else if (a == "--census-frames") census::stopafter = std::stol(next());
+        else if (a == "--census-code") { std::string c = next(); if (c.size() == 4) std::memcpy(&census::code, c.data(), 4); }
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
@@ -542,7 +624,18 @@ int main(int argc, char** argv)
             std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios\n");
         }
     }
-    if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
+    if (!census::prefix.empty())
+    {
+        if (!census::code) usage();
+        prof::nds = nds.get();
+        census::profile = profile;
+        nds->ARM9.ProfOn = true;
+        nds->ARM9.ProfVBlank = census::on_vblank;
+        census::frames = std::fopen((census::prefix + ".frames.csv").c_str(), "w");
+        if (!census::frames) { std::fprintf(stderr, "cannot write %s.frames.csv\n", census::prefix.c_str()); return 2; }
+        std::fprintf(census::frames, "frame,busy,halted,halted_oshalt,halted_bios,halted_other,arm9_pc,wait_line,wait_kind,wait_run\n");
+    }
+    if ((scriptfromgame || prof::cachefromgame) && !profile && census::prefix.empty()) usage();
 
     melonDS::Net netstack;
     if (net)
@@ -614,7 +707,7 @@ int main(int argc, char** argv)
     }
 
     long f = 0;
-    for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
+    for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done && !census::done; f++)
     {
         for (auto& p : pokes)
         {
@@ -632,7 +725,8 @@ int main(int argc, char** argv)
         u32 held = keys;
         int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
-        long st = !scriptfromgame ? f : prof::startframe >= 0 ? f - prof::startframe : -1;
+        long gamestart = !census::prefix.empty() ? census::startframe : prof::startframe;
+        long st = !scriptfromgame ? f : gamestart >= 0 ? f - gamestart : -1;
         for (auto& p : script)
         {
             if (st < 0) break;
@@ -785,8 +879,9 @@ int main(int argc, char** argv)
             std::fclose(pf);
         }
     }
+    if (!census::prefix.empty()) census::write();
     g_net = nullptr;
     std::fprintf(stderr, "[runner] %ld frames, %s\n", f,
-                 hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : prof::done ? "profile frames done" : "frame limit");
+                 hl::hit_until ? "marker reached" : hl::stopped ? "emulator stopped" : prof::done ? "profile frames done" : census::done ? "census frames done" : "frame limit");
     return hl::hit_until || hl::until.empty() ? 0 : 1;
 }

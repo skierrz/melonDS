@@ -2812,6 +2812,7 @@ bool NDS::ARM7GetMemRegion(u32 addr, bool write, MemRegion* region)
 
 u8 NDS::ARM9IORead8(u32 addr)
 {
+    if (ARM9.CensusOn) ARM9.CensusIORead(addr & ~1u);
     switch (addr)
     {
     case 0x04000004: return GPU.DispStat[0] & 0xFF;
@@ -2903,6 +2904,7 @@ u8 NDS::ARM9IORead8(u32 addr)
 
 u16 NDS::ARM9IORead16(u32 addr)
 {
+    if (ARM9.CensusOn) ARM9.CensusIORead(addr & ~1u);
     switch (addr)
     {
     case 0x04000004: return GPU.DispStat[0];
@@ -3029,6 +3031,7 @@ u16 NDS::ARM9IORead16(u32 addr)
 
 u32 NDS::ARM9IORead32(u32 addr)
 {
+    if (ARM9.CensusOn) ARM9.CensusIORead(addr & ~1u);
     switch (addr)
     {
     case 0x04000004: return GPU.DispStat[0] | (GPU.VCount << 16);
