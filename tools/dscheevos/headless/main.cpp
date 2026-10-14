@@ -522,7 +522,8 @@ static void usage()
         "                       (default: ~96 SD clocks; 0 = never seen, as when an IRQ delays the poll)\n"
         "  --trace-io FILE      CSV per frame (sampled after each frame): ARM9/ARM7 IME/IE/IF, ARM9 TIMER0,\n"
         "                       engine B DISPCNT, BG3CNT, BG0-3 scroll, BLDCNT/BLDALPHA/BLDY, BG mosaic,\n"
-        "                       POWCNT1, SOUNDCNT, then the --trace-word words\n"
+        "                       POWCNT1, SOUNDCNT, ARM9 CP15 data access permissions (c5) and CPSR,\n"
+        "                       then the --trace-word words\n"
         "  --trace-word ADDR    with --trace-io: also log this main-RAM word (repeatable)\n"
         "  --poke FRAME:CPU:ADDR:VALUE:BITS  before FRAME runs, write VALUE through the ARM9 (CPU 9) or\n"
         "                       ARM7 (CPU 7) bus, 8/16/32 bits (repeatable); e.g. stands in for a game\n"
@@ -823,7 +824,7 @@ int main(int argc, char** argv)
         tio = std::fopen(traceio.c_str(), "w");
         if (!tio) { std::fprintf(stderr, "cannot open %s\n", traceio.c_str()); return 2; }
         std::fprintf(tio, "frame,ime9,ie9,if9,ime7,ie7,if7,tm0cnt9,tm0val9,dispcnt_b,bg3cnt_b,bg0hofs_b,bg0vofs_b,bg1hofs_b,bg1vofs_b,"
-                          "bg2hofs_b,bg2vofs_b,bg3hofs_b,bg3vofs_b,bldcnt_b,bldalpha_b,bldy_b,mosaic_b,powcnt1,soundcnt");
+                          "bg2hofs_b,bg2vofs_b,bg3hofs_b,bg3vofs_b,bldcnt_b,bldalpha_b,bldy_b,mosaic_b,powcnt1,soundcnt,dperm9,cpsr9");
         for (u32 w : tracewords) std::fprintf(tio, ",w%08x", w);
         std::fprintf(tio, "\n");
     }
@@ -911,11 +912,11 @@ int main(int argc, char** argv)
         if (tio)
         {
             auto& b = nds->GPU.GPU2D_B;
-            std::fprintf(tio, "%ld,%u,%08x,%08x,%u,%08x,%08x,%04x,%04x,%08x,%04x,%u,%u,%u,%u,%u,%u,%u,%u,%04x,%04x,%u,%02x%02x,%04x,%04x", f,
+            std::fprintf(tio, "%ld,%u,%08x,%08x,%u,%08x,%08x,%04x,%04x,%08x,%04x,%u,%u,%u,%u,%u,%u,%u,%u,%04x,%04x,%u,%02x%02x,%04x,%04x,%08x,%08x", f,
                          nds->IME[0], nds->IE[0], nds->IF[0], nds->IME[1], nds->IE[1], nds->IF[1],
                          nds->ARM9Read16(0x04000102), nds->ARM9Read16(0x04000100), b.DispCnt, b.BGCnt[3],
                          b.BGXPos[0], b.BGYPos[0], b.BGXPos[1], b.BGYPos[1], b.BGXPos[2], b.BGYPos[2], b.BGXPos[3], b.BGYPos[3],
-                         b.BlendCnt, b.BlendAlpha, b.EVY, b.BGMosaicSize[1], b.BGMosaicSize[0], nds->PowerControl9, nds->ARM7Read16(0x04000500));
+                         b.BlendCnt, b.BlendAlpha, b.EVY, b.BGMosaicSize[1], b.BGMosaicSize[0], nds->PowerControl9, nds->ARM7Read16(0x04000500), nds->ARM9.PU_DataRW, nds->ARM9.CPSR);
             for (u32 w : tracewords)
             {
                 u32 o = w & nds->MainRAMMask & ~3u;
