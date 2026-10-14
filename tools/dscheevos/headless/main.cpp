@@ -135,7 +135,7 @@ static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->Ma
 static void find_module(ARMv5& cpu)
 {
     u32 size = ram32(base + 8), vblank = ram32(base + 0x10), halt = ram32(base + 0x14);
-    if (ram32(base) == 0x56435344 && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
+    if (ram32(base + 0x3C) == 0x56435344 && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
         && vblank >= base && vblank < halt)
     {
         // the whole 2 MB region is the module's: code it generates at run time lives in its heap
