@@ -507,7 +507,8 @@ static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrob
 s32 ARMv5::CacheModelCode(u32 addr)
 {
     s32 cost = CacheModelCodeReal(addr);
-    if (!ProfOn || ProfInModule(addr)) return cost;
+    if (!ProfOn) return cost;
+    if (ProfInModule(addr)) { if (FpOn) FpTouch(addr & ~0x1Fu); return cost; }
     // a game fetch: the shadow I-cache
     bool realmiss = cost != 1;
     if (realmiss) Prof.GameIMiss++;
@@ -617,10 +618,12 @@ s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s3
     u32 set = (addr >> 5) & 0x1F;
     if (WhatIfDSets && ProfOn && ProfCurMod) set &= WhatIfDSets;   // what-if: module data in fewer sets
     u32* tags = &CMDTags[set << 2];
+    if (FpOn && ProfOn && ProfCurMod && !write) FpTouch(line | 1);
     for (int w = 0; w < 4; w++)
     {
         if ((tags[w] & ~0x1F) == line && (tags[w] & 1))
         {
+            if (FpOn && ProfOn && ProfCurMod && write) FpTouch(line | 1);
             if (!write)
             {
                 CacheStats.DReadHit++;

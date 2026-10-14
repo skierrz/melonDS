@@ -753,6 +753,28 @@ void ARMv5::ProfHalted(u64 cycles)
     if (ProfHaltBios) Prof.HaltedBios += c;
 }
 
+void ARMv5::FpEnd()
+{
+    u64 iset = 0; u32 down = 0, dgame = 0, dall = 0;
+    u64 il = 0, dol = 0, dgl = 0;
+    for (u32 k : FpCur)
+    {
+        if (k & 1)
+        {
+            u32 set = 1u << ((k >> 5) & 0x1F);
+            dall |= set;
+            if (ProfInModule(k & ~0x1Fu)) { dol++; down |= set; } else { dgl++; dgame |= set; }
+        }
+        else { il++; iset |= 1ull << ((k >> 5) & 0x3F); }
+        if (FpLines) { auto& e = (*FpLines)[k]; if (FpPass) e.second++; else e.first++; }
+    }
+    auto& f = Fp[FpPass ? 1 : 0];
+    f.Stretches++; f.ILines += il; f.ISets += __builtin_popcountll(iset);
+    f.DOwnLines += dol; f.DOwnSets += __builtin_popcount(down);
+    f.DGameLines += dgl; f.DGameSets += __builtin_popcount(dgame); f.DSets += __builtin_popcount(dall);
+    FpCur.clear(); FpStretch++; FpActive = FpPass = false;
+}
+
 void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
 {
     const u64 c = (u64)Cycles << (2 - NDS.ARM9ClockShift);
@@ -762,6 +784,11 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
                             || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
     Prof.Busy += c;
     if (Halted == 1) ProfHaltBios = addr >= 0xFFFF0000;
+    if (FpOn)
+    {
+        if (in && !vbl && !irq) { FpActive = true; if (FpHot && addr >= FpHot && !(addr >= FpLightLo && addr < FpLightHi)) FpPass = true; }
+        else if (!in && FpActive) FpEnd();
+    }
     if (ProfPCs && in && vbl)
     {
         auto& e = (*ProfPCs)[addr];

@@ -83,6 +83,12 @@ std::vector<ARMv5::ProfPCStat> bootpcs;
 bool bootarmed = false;
 std::vector<ARMv5::ProfPCStat> idlepcs;
 std::string gamepcspath;    // --profile-game-pcs
+std::string fppath;         // --profile-footprint: module lines/sets touched per stretch
+long fpskip = 0;            // --profile-footprint-skip N: count from the Nth interval on
+u32 fphot = 0;              // --profile-footprint-hot ADDR: __hot_start (pass vs light stretches)
+u32 fplightlo = 0, fplighthi = 0;  // --profile-footprint-light LO:HI (hex): hot-region code light wakes run
+std::map<u32, std::pair<u64, u64>> fplines;
+u64 fpintervals = 0;
 std::map<u32, ARMv5::ProfGamePC> gamepcs;
 std::string arm7path;       // --profile-arm7 (cycles by 256-byte PC block)
 bool arm7 = false;          // ARM7 counters (any --profile-arm7*)
@@ -198,6 +204,11 @@ static void on_vblank(ARMv5& cpu)
     else if (!done)
     {
         n++;
+        if (!fppath.empty())
+        {
+            if (cpu.FpOn) fpintervals++;
+            if (!cpu.FpOn && (long)n > fpskip) { cpu.FpOn = true; cpu.FpHot = fphot; cpu.FpLightLo = fplightlo; cpu.FpLightHi = fplighthi; cpu.FpLines = &fplines; cpu.FpCur.clear(); cpu.FpActive = cpu.FpPass = false; }
+        }
         vbl += p.VBlank; vblmax = std::max(vblmax, p.VBlank);
         idle += p.Idle; idlemax = std::max(idlemax, p.Idle);
         irqmode += p.IRQMode;
@@ -229,6 +240,7 @@ static void on_vblank(ARMv5& cpu)
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
+            cpu.FpOn = false;
             cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdleDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr; cpu.ProfRoles = nullptr;
             nds->ARM7.Prof7Blocks = nullptr;
         }
@@ -436,6 +448,10 @@ static void usage()
         "                       reached idle); summary at exit\n"
         "  --module-base ADDR   module address for --profile (default 0x02D80000)\n"
         "  --profile-frames N   with --profile: stop N VBlanks after the game's first OS_Halt call\n"
+        "  --profile-footprint FILE  with --profile: distinct cache lines/sets module idle code touches per stretch\n"
+        "                       (module code between game instructions); per-line counts. --profile-footprint-skip N\n"
+        "                       counts from interval N; --profile-footprint-hot HEX (__hot_start) splits light/pass stretches;\n"
+        "                       --profile-footprint-light LO:HI (hex) code in the hot region light wakes run\n"
         "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
@@ -526,6 +542,11 @@ int main(int argc, char** argv)
         else if (a == "--profile-idle-dmiss") prof::idledmisspath = next();
         else if (a == "--profile-boot-pcs") prof::bootpcspath = next();
         else if (a == "--profile-game-pcs") prof::gamepcspath = next();
+        else if (a == "--profile-footprint") prof::fppath = next();
+        else if (a == "--profile-footprint-skip") prof::fpskip = std::stol(next());
+        else if (a == "--profile-footprint-hot") prof::fphot = (u32)std::stoul(next(), nullptr, 16);
+        else if (a == "--profile-footprint-light") { std::string v = next(); size_t c = v.find(':');
+            prof::fplightlo = (u32)std::stoul(v.substr(0, c), nullptr, 16); prof::fplighthi = (u32)std::stoul(v.substr(c + 1), nullptr, 16); }
         else if (a == "--whatif-module-isets") whatifi = std::stoul(next(), nullptr, 0);
         else if (a == "--whatif-module-dsets") whatifd = std::stoul(next(), nullptr, 0);
         else if (a == "--profile-arm7") { prof::arm7 = true; prof::arm7path = next(); }
@@ -914,6 +935,27 @@ int main(int argc, char** argv)
                                  a & ~3u, (unsigned long long)n);
                 std::fclose(pf);
             }
+        }
+    }
+    if (profile && !prof::fppath.empty())
+    {
+        FILE* pf = std::fopen(prof::fppath.c_str(), "w");
+        if (pf)
+        {
+            auto& cpu = nds->ARM9;
+            std::fprintf(pf, "summary,class,intervals,stretches,ilines,isets,downlines,downsets,dgamelines,dgamesets,dsets\n");
+            for (int c = 0; c < 2; c++)
+            {
+                auto& f = cpu.Fp[c];
+                std::fprintf(pf, "summary,%s,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", c ? "pass" : "light",
+                             (unsigned long long)prof::fpintervals, (unsigned long long)f.Stretches, (unsigned long long)f.ILines,
+                             (unsigned long long)f.ISets, (unsigned long long)f.DOwnLines, (unsigned long long)f.DOwnSets,
+                             (unsigned long long)f.DGameLines, (unsigned long long)f.DGameSets, (unsigned long long)f.DSets);
+            }
+            std::fprintf(pf, "line,kind,addr,light,pass\n");
+            for (auto& [k, v] : prof::fplines)
+                std::fprintf(pf, "line,%c,%08x,%llu,%llu\n", (k & 1) ? 'D' : 'I', k & ~0x1Fu, (unsigned long long)v.first, (unsigned long long)v.second);
+            std::fclose(pf);
         }
     }
     if (profile && !prof::gamepcspath.empty())

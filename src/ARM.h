@@ -23,6 +23,7 @@
 #include <optional>
 #include <map>
 #include <vector>
+#include <unordered_map>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -439,6 +440,25 @@ public:
     struct ProfRoleFrame { u32 Ret, Fn; u16 Role; };
     ProfRoleFrame ProfRoleStack[64] {};
     u32 ProfRoleDepth = 0;
+    // --profile-footprint: the distinct cache lines (and sets) module idle code touches per
+    // stretch (module code between two game instructions, i.e. per wake or per resumed part of a
+    // pass): code lines fetched, data lines read or written-hit through the D-cache (a write miss
+    // allocates nothing). Purely observational. FpHot: a stretch that runs code at or above it
+    // (the hot region: rcheevos, the core's pass) is a "pass" stretch, else "light".
+    struct FpStat { u64 Stretches, ILines, ISets, DOwnLines, DOwnSets, DGameLines, DGameSets, DSets; };
+    bool FpOn = false, FpActive = false, FpPass = false;
+    u32 FpHot = 0, FpStretch = 1;
+    u32 FpLightLo = 0, FpLightHi = 0;               // code in the hot region that light wakes run (not a pass)
+    FpStat Fp[2] {};
+    std::unordered_map<u32, u32> FpSeen;              // key -> last stretch that touched it
+    std::vector<u32> FpCur;                           // keys this stretch (line | 1 for data)
+    std::map<u32, std::pair<u64, u64>>* FpLines = nullptr;  // key -> stretches (light, pass)
+    void FpTouch(u32 key)
+    {
+        u32& s = FpSeen[key];
+        if (s != FpStretch) { s = FpStretch; FpCur.push_back(key); }
+    }
+    void FpEnd();
     u32 ProfPend[8] {};
     u32 ProfPendN = 0;
     CacheModelStats ProfPrevStats {};
