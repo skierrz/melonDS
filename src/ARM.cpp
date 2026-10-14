@@ -775,8 +775,28 @@ void ARMv5::FpEnd()
     FpCur.clear(); FpStretch++; FpActive = FpPass = false;
 }
 
+void ARMv5::ProfWaitEvent(char kind, u32 addr)
+{
+    const u32 flag = DTCM ? *(u32*)&DTCM[0x3FF8 & DTCMMask] : 0;
+    std::fprintf(ProfWaitLog, "%u,%c,%u,%08x,%llu,%llu,%llu,%u,%x,%x\n", ProfFrame, kind, NDS.GPU.VCount, addr,
+                 (unsigned long long)Prof.GameInstr, (unsigned long long)Prof.GameCycles, (unsigned long long)Prof.Idle,
+                 flag, NDS.IF[0], NDS.IE[0]);
+}
+
 void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
 {
+    if (ProfWaitLog)
+    {
+        const bool wirq = (cpsr & 0x1F) == 0x12;
+        if (wirq && !ProfPrevIRQ && (NDS.IF[0] & NDS.IE[0] & 1)) ProfWaitEvent('I', addr);
+        if (!wirq && ProfGateAddr && addr == ProfGateAddr) ProfWaitEvent('G', addr);
+        if (!wirq && ProfWaitRet && addr == ProfWaitRet) { ProfWaitEvent('R', addr); ProfWaitRet = 0; }
+        if ((cpsr & 0x20) ? (CurInstr & 0xFFFF) == 0xDF05 : (CurInstr & 0x0FFFFFFF) == 0x0F000005)
+        {
+            ProfWaitEvent('S', addr);
+            ProfWaitRet = addr + ((cpsr & 0x20) ? 2 : 4);
+        }
+    }
     const u64 c = (u64)Cycles << (2 - NDS.ARM9ClockShift);
     const bool irq = (cpsr & 0x1F) == 0x12;
     const bool in = addr >= ProfLo && addr < ProfHi;
@@ -882,7 +902,10 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     // (mov r0, #0; mcr p15, 0, r0, c7, c0, 4; bx lr)
     if (!(cpsr & 0x20) && (ProfHaltEntry ? addr == ProfHaltEntry
             : CurInstr == 0xEE070F90 && ProfPrevInstr == 0xE3A00000 && NextInstr[0] == 0xE12FFF1E))
+    {
         Prof.Halts++;
+        if (ProfWaitLog) ProfWaitEvent('H', addr);
+    }
     ProfPrevInstr = CurInstr;
     ProfPrevIn = in;
     if (irq)

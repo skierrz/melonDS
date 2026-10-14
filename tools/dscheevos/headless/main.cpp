@@ -70,6 +70,7 @@ NDS* nds = nullptr;
 u32 base = 0x02D80000;      // DSCM_BASE (dscheevos/module/module.ld)
 long stopafter = -1;        // --profile-frames
 FILE* log = nullptr;        // --profile-log
+FILE* waitlog = nullptr;    // --trace-wait (LAB coverage)
 long startframe = -1;       // frame of the game's first OS_Halt call
 u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0, swi5 = 0, swilag = 0, swilagrun = 0, swilagmax = 0;
 u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0, halted = 0, haltedbios = 0;
@@ -142,9 +143,10 @@ static void find_module(ARMv5& cpu)
         cpu.ProfLo = base; cpu.ProfHi = base + 0x200000; cpu.ProfHaltEntry = halt;
         cpu.ProfVBlankLo = vblank; cpu.ProfVBlankHi = halt;
         cpu.ProfIrqStackLo = base + size; cpu.ProfIrqStackHi = base + 0x200000 - 0x2000;
+        cpu.ProfGateAddr = base;   // LAB coverage: header word 0, the patched SVC_WaitVBlankIntr's target
     }
     else
-        cpu.ProfLo = cpu.ProfHi = cpu.ProfHaltEntry = cpu.ProfVBlankLo = cpu.ProfVBlankHi = cpu.ProfIrqStackLo = cpu.ProfIrqStackHi = 0;
+        cpu.ProfLo = cpu.ProfHi = cpu.ProfHaltEntry = cpu.ProfVBlankLo = cpu.ProfVBlankHi = cpu.ProfIrqStackLo = cpu.ProfIrqStackHi = cpu.ProfGateAddr = 0;
 }
 
 static void write_pcs(const std::string& path, const std::vector<ARMv5::ProfPCStat>& v)
@@ -250,6 +252,13 @@ static void on_vblank(ARMv5& cpu)
             nds->ARM7.Prof7Blocks = nullptr;
         }
     }
+    if (waitlog && startframe >= 0 && !done)
+    {
+        if (!cpu.ProfWaitLog) cpu.ProfWaitLog = waitlog;
+        cpu.ProfWaitEvent('V', p.Swi5);
+    }
+    else if (done) cpu.ProfWaitLog = nullptr;
+    cpu.ProfFrame = (u32)hl::frame;
     u32 halts = p.Halts;
     p = {};
     p.Halts = halts;
@@ -501,6 +510,8 @@ static void usage()
         "                       counts from interval N; --profile-footprint-hot HEX (__hot_start) splits light/pass stretches;\n"
         "                       --profile-footprint-light LO:HI (hex) code in the hot region light wakes run\n"
         "  --profile-log FILE   with --profile: CSV per VBlank interval\n"
+        "  --trace-wait FILE    with --profile: per event (G gate entry, S SWI 5, R its return, I VBlank IRQ,\n"
+        "                       H OS_Halt, V VBlank with the interval's SWI 5 count in addr) with VCOUNT (LAB coverage)\n"
         "  --profile-pcs FILE   with --profile: the VBlank call's cycles and cache misses by PC, and its\n"
         "                       data misses and uncached accesses by address (CSV, from the game's start)\n"
         "  --profile-idle-pcs FILE  with --profile: the module's idle work by PC (count, cycles, cache misses)\n"
@@ -586,6 +597,9 @@ int main(int argc, char** argv)
         else if (a == "--module-base") prof::base = std::stoul(next(), nullptr, 0);
         else if (a == "--profile-frames") prof::stopafter = std::stol(next());
         else if (a == "--profile-log") proflog = next();
+        else if (a == "--trace-wait") { std::string f = next(); prof::waitlog = std::fopen(f.c_str(), "w");
+            if (!prof::waitlog) { std::fprintf(stderr, "cannot write %s\n", f.c_str()); return 2; }
+            std::fprintf(prof::waitlog, "frame,kind,vcount,addr,game_instr,game_cycles,module_idle,flag3ff8,if,ie\n"); }
         else if (a == "--script-from-game") scriptfromgame = true;
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
@@ -972,6 +986,7 @@ int main(int argc, char** argv)
     {
         prof::report(*nds);
         if (prof::log) std::fclose(prof::log);
+        if (prof::waitlog) { nds->ARM9.ProfWaitLog = nullptr; std::fclose(prof::waitlog); }
         if (!prof::pcspath.empty())
         {
             FILE* pf = std::fopen(prof::pcspath.c_str(), "w");

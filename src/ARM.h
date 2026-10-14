@@ -379,6 +379,11 @@ public:
         u32 Swi5;                          // SWI 5 (VBlankIntrWait) calls this interval: the BIOS-wait game's frames
     };
     u64 ProfMaskRun = 0;                   // the current wait so far
+    // --trace-wait (LAB coverage): one CSV line per event of a BIOS-wait game's frame: G gate entry
+    // (PC = ProfGateAddr), S SWI 5, R its return, I VBlank IRQ taken, H OS_Halt; V (runner) each VBlank
+    FILE* ProfWaitLog = nullptr;
+    u32 ProfGateAddr = 0, ProfWaitRet = 0, ProfFrame = 0;
+    void ProfWaitEvent(char kind, u32 addr);
     u64 ProfIRQRun = 0;                    // the current IRQ-mode stretch so far
     bool ProfPrevIRQ = false;
     bool ProfHaltBios = false;             // the current halt started in the BIOS
