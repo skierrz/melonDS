@@ -71,7 +71,7 @@ u32 base = 0x02D80000;      // DSCM_BASE (dscheevos/module/module.ld)
 long stopafter = -1;        // --profile-frames
 FILE* log = nullptr;        // --profile-log
 long startframe = -1;       // frame of the game's first OS_Halt call
-u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0;
+u64 n = 0, lag = 0, lagrun = 0, maxlagrun = 0, swi5 = 0, swilag = 0, swilagrun = 0, swilagmax = 0;
 u64 vbl = 0, vblmax = 0, idle = 0, idlemax = 0, irqmode = 0, busy = 0, before = 0, halted = 0, haltedbios = 0;
 bool done = false;
 bool cachefromgame = false; // --cache-model-from-game
@@ -223,6 +223,8 @@ static void on_vblank(ARMv5& cpu)
         polli += p.PollI; polld += p.PollD; pollwb += p.PollWB; revi += p.RevI; revd += p.RevD;
         auto& a7 = nds->ARM7;
         a7busy += a7.Prof7Busy; a7range += a7.Prof7Range; a7rangemax = std::max(a7rangemax, a7.Prof7Range);
+        swi5 += p.Swi5;
+        if (p.Swi5 == 0) { swilag++; swilagmax = std::max(swilagmax, ++swilagrun); } else swilagrun = 0;
         bool lagged = p.IdleArrivals == 0;
         if (lagged) { lag++; maxlagrun = std::max(maxlagrun, ++lagrun); }
         else lagrun = 0;
@@ -299,6 +301,8 @@ static void report(NDS& nds)
     std::fprintf(stderr, "[prof] ARM9 busy: avg %.1f%% of a frame\n", pct((double)busy / n));
     std::fprintf(stderr, "[prof] ARM9 halted: avg %.0f cycles/interval (%.1f%%), %.1f%% of it in BIOS halts\n",
                  cyc((double)halted / n), pct((double)halted / n), halted ? 100.0 * haltedbios / halted : 0.0);
+    std::fprintf(stderr, "[prof] swi5: %llu calls; intervals without one %llu (longest run %llu)\n", (unsigned long long)swi5,
+                 (unsigned long long)swilag, (unsigned long long)swilagmax);
     std::fprintf(stderr, "[prof] lag: %llu of %llu intervals (%.2f%%), longest run %llu\n", (unsigned long long)lag,
                  (unsigned long long)n, 100.0 * lag / n, (unsigned long long)maxlagrun);
     std::fprintf(stderr, "[game] cycles/interval outside the module: %.0f (%.2f%%), of it IRQ mode %.0f; instructions %.0f (CPI %.3f)\n",

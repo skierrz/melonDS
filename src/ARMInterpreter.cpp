@@ -266,6 +266,7 @@ void A_MRC(ARM* cpu)
 
 void A_SVC(ARM* cpu)
 {
+    if (cpu->Num == 0 && ((cpu->CurInstr >> 16) & 0xFF) == 5) ((ARMv5*)cpu)->Prof.Swi5++;
     u32 oldcpsr = cpu->CPSR;
     cpu->CPSR &= ~0xBF;
     cpu->CPSR |= 0x93;
@@ -278,6 +279,7 @@ void A_SVC(ARM* cpu)
 
 void T_SVC(ARM* cpu)
 {
+    if (cpu->Num == 0 && (cpu->CurInstr & 0xFF) == 5) ((ARMv5*)cpu)->Prof.Swi5++;
     u32 oldcpsr = cpu->CPSR;
     cpu->CPSR &= ~0xBF;
     cpu->CPSR |= 0x93;

@@ -376,6 +376,7 @@ public:
         // module code outside IRQ mode with CPSR.I set: all of it, the part with an IRQ waiting
         // (IME on, IE & IF: the game's IRQ is held off), and the longest such wait
         u64 Masked, MaskedPend, MaskedPendMax;
+        u32 Swi5;                          // SWI 5 (VBlankIntrWait) calls this interval: the BIOS-wait game's frames
     };
     u64 ProfMaskRun = 0;                   // the current wait so far
     u64 ProfIRQRun = 0;                    // the current IRQ-mode stretch so far
