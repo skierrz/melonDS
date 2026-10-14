@@ -29,6 +29,9 @@
 #include "DSi_NAND.h"
 #include "FATStorage.h"
 #include <ctime>
+#include <csignal>
+#include <unistd.h>
+#include <fcntl.h>
 #include "Platform.h"
 #include "Net.h"
 #include "Net_Slirp.h"
@@ -411,6 +414,47 @@ static void write_ppm(NDS& nds, const std::string& path)
     std::fclose(f);
 }
 
+// --soft-term: a first SIGTERM/SIGHUP from outside is logged and ignored (an accidental cleanup or
+// another session's kill bounces off); a second one within 10 s, SIGINT, or SIGKILL stops the run as
+// before. The line names the sender pid (si_pid) so the source can be found later. Test scripts pass
+// the flag; without it the default signal behaviour is unchanged. DSC_RUN_LABEL names the run in the
+// message; DSC_SOFTTERM_LOG (a file) also gets the line appended.
+static const char* g_softLabel = "melonds-headless";
+static const char* g_softLog = nullptr;
+static void softTermHandler(int sig, siginfo_t* si, void*)
+{
+    static volatile time_t last = 0;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (last && ts.tv_sec - last <= 10)
+    {
+        signal(sig, SIG_DFL);
+        raise(sig);                      // stop as before
+        return;
+    }
+    last = ts.tv_sec;
+    char buf[320];
+    time_t now = time(nullptr);
+    int n = snprintf(buf, sizeof buf,
+        "%s: ignored SIG%s from outside (sender pid %ld, at %ld); send it again within 10 s, or use SIGINT/SIGKILL, to stop\n",
+        g_softLabel, sig == SIGTERM ? "TERM" : "HUP", (long)(si ? si->si_pid : 0), (long)now);
+    if (n > 0) { (void)!write(2, buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); }
+    if (g_softLog && n > 0)
+    {
+        int fd = open(g_softLog, O_WRONLY | O_APPEND | O_CREAT, 0600);
+        if (fd >= 0) { (void)!write(fd, buf, n < (int)sizeof buf ? n : (int)sizeof buf - 1); close(fd); }
+    }
+}
+static void installSoftTerm()
+{
+    if (const char* l = getenv("DSC_RUN_LABEL")) if (*l) g_softLabel = l;
+    g_softLog = getenv("DSC_SOFTTERM_LOG");
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = softTermHandler; sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGHUP, &sa, nullptr);
+}
+
 static void usage()
 {
     std::fprintf(stderr,
@@ -484,6 +528,7 @@ static void usage()
         "                       ARM7 (CPU 7) bus, 8/16/32 bits (repeatable); e.g. stands in for a game\n"
         "                       that set a write-only register once\n"
         "  --dump-ram-at FRAME:FILE  write main RAM after FRAME (repeatable)\n"
+        "  --soft-term          ignore a first SIGTERM/SIGHUP (log it); a second within 10 s, SIGINT or SIGKILL stops\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -514,6 +559,7 @@ int main(int argc, char** argv)
         else if (a == "--bios-dir") biosdir = next();
         else if (a == "--nand") nandpath = next();
         else if (a == "--sd") sddir = next();
+        else if (a == "--soft-term") installSoftTerm();
         else if (a == "--frames") frames = std::stol(next());
         else if (a == "--until") hl::until = next();
         else if (a == "--screenshot") shot = next();
