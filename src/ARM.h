@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <optional>
 #include <map>
+#include <array>
 #include <vector>
 #include <unordered_map>
 
@@ -424,6 +425,12 @@ public:
     u32 ProfCurPC = 0;
     struct ProfGamePC { s64 IExtra, DExtra; u64 PollI, PollD; };
     std::map<u32, ProfGamePC>* ProfGamePCs = nullptr;
+    // busyloop lab: --hist9, ARM9 cycles by PC (outside / in CPSR IRQ mode) while set; --range9, per
+    // interval, non-IRQ cycles with the PC in [Lo, Hi) or, once there, in [SubLo, SubHi) until the PC
+    // leaves both (a spin loop and the poll it calls); First/Last: VCOUNT at the first entry / last exit.
+    std::map<u32, std::array<u64, 2>>* Hist9 = nullptr;
+    struct Range9 { u32 Lo, Hi, SubLo, SubHi; bool In; u64 Cyc, Entries; u32 First, Last; };
+    std::vector<Range9> Ranges9;
     void ShadowReset();
     bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
     // Optional: the idle work by role (--profile-idle-roles). ProfRoleOf maps a

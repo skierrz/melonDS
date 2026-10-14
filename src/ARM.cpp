@@ -784,6 +784,18 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
                             || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
     Prof.Busy += c;
     if (Halted == 1) ProfHaltBios = addr >= 0xFFFF0000;
+    if (Hist9) (*Hist9)[addr][irq ? 1 : 0] += c;
+    if (!irq)
+        for (auto& r : Ranges9)
+        {
+            const bool hit = (addr >= r.Lo && addr < r.Hi) || (r.In && addr >= r.SubLo && addr < r.SubHi);
+            if (hit)
+            {
+                if (!r.In) { r.Entries++; if (r.First == 0xFFFF) r.First = NDS.GPU.VCount; }
+                r.In = true; r.Cyc += c;
+            }
+            else if (r.In) { r.In = false; r.Last = NDS.GPU.VCount; }
+        }
     if (FpOn)
     {
         if (in && !vbl && !irq) { FpActive = true; if (FpHot && addr >= FpHot && !(addr >= FpLightLo && addr < FpLightHi)) FpPass = true; }

@@ -1,3 +1,4 @@
+#include <array>
 // Headless melonDS runner for DScheevos development.
 // Boots a .nds in DS or DSi mode, runs frames with no window, passes through
 // test output printed via the no$gba debug port, and can stop on a marker.
@@ -97,6 +98,10 @@ std::string arm7path;       // --profile-arm7 (cycles by 256-byte PC block)
 bool arm7 = false;          // ARM7 counters (any --profile-arm7*)
 u32 arm7lo = 0, arm7hi = 0; // --profile-arm7-range
 std::vector<u64> arm7blocks;
+std::string hist9path;      // busyloop lab: --hist9 FILE (ARM9 cycles by PC), from interval hist9skip on
+long hist9skip = 0;
+std::map<u32, std::array<u64, 2>> hist9;
+std::vector<ARMv5::Range9> ranges9;   // --range9 LO:HI[:SLO:SHI] (columns in the profile log)
 u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
 s64 giextra = 0, gdextra = 0;
 u64 polli = 0, polld = 0, pollwb = 0, revi = 0, revd = 0, a7busy = 0, a7range = 0, a7rangemax = 0;
@@ -212,6 +217,7 @@ static void on_vblank(ARMv5& cpu)
             if (cpu.FpOn) fpintervals++;
             if (!cpu.FpOn && (long)n > fpskip) { cpu.FpOn = true; cpu.FpHot = fphot; cpu.FpLightLo = fplightlo; cpu.FpLightHi = fplighthi; cpu.FpLines = &fplines; cpu.FpCur.clear(); cpu.FpActive = cpu.FpPass = false; }
         }
+        if (!hist9path.empty() && !cpu.Hist9 && (long)n > hist9skip) cpu.Hist9 = &hist9;
         vbl += p.VBlank; vblmax = std::max(vblmax, p.VBlank);
         idle += p.Idle; idlemax = std::max(idlemax, p.Idle);
         irqmode += p.IRQMode;
@@ -238,12 +244,18 @@ static void on_vblank(ARMv5& cpu)
                          (unsigned long long)p.PollI, (unsigned long long)p.PollD, (unsigned long long)p.PollWB,
                          (unsigned long long)p.RevI, (unsigned long long)p.RevD,
                          (unsigned long long)a7.Prof7Busy, (unsigned long long)a7.Prof7Range);
-        if (log) std::fprintf(log, ",%lld,%u,%u,%llu,%llu,%llu,%llu\n", (long long)p.GameExtraIRQ, p.Resumes, p.IRQs, (unsigned long long)p.IRQMax,
+        if (log) std::fprintf(log, ",%lld,%u,%u,%llu,%llu,%llu,%llu", (long long)p.GameExtraIRQ, p.Resumes, p.IRQs, (unsigned long long)p.IRQMax,
                               (unsigned long long)p.Masked, (unsigned long long)p.MaskedPend, (unsigned long long)p.MaskedPendMax);
+        if (log)
+            for (auto& r : cpu.Ranges9)
+                std::fprintf(log, ",%llu,%llu,%d,%d", (unsigned long long)r.Cyc, (unsigned long long)r.Entries,
+                             r.First == 0xFFFF ? -1 : (int)r.First, r.Last == 0xFFFF ? -1 : (int)r.Last);
+        if (log) std::fprintf(log, "\n");
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
             cpu.FpOn = false;
+            cpu.Hist9 = nullptr;
             cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdleDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr; cpu.ProfRoles = nullptr;
             nds->ARM7.Prof7Blocks = nullptr;
         }
@@ -252,11 +264,22 @@ static void on_vblank(ARMv5& cpu)
     p = {};
     p.Halts = halts;
     nds->ARM7.Prof7Busy = nds->ARM7.Prof7Range = 0;
+    for (auto& r : cpu.Ranges9) { r.Cyc = r.Entries = 0; r.First = r.Last = 0xFFFF; }
     find_module(cpu);
 }
 
 static void report(NDS& nds)
 {
+    if (!hist9path.empty())
+    {
+        if (FILE* hf = std::fopen(hist9path.c_str(), "w"))
+        {
+            std::fprintf(hf, "pc,cycles,irq_cycles\n");
+            for (auto& [pc, v] : hist9)
+                std::fprintf(hf, "%08x,%llu,%llu\n", pc, (unsigned long long)v[0], (unsigned long long)v[1]);
+            std::fclose(hf);
+        }
+    }
     // counted in 133 MHz units; print cycles at the clock in use
     int shift = 2 - nds.ARM9ClockShift;
     double frame = 560190.0 * 4;
@@ -530,12 +553,19 @@ static void usage()
         "                       that set a write-only register once\n"
         "  --dump-ram-at FRAME:FILE  write main RAM after FRAME (repeatable)\n"
         "  --soft-term          ignore a first SIGTERM/SIGHUP (log it); a second within 10 s, SIGINT or SIGKILL stops\n"
+        "  --hist9 FILE         with --profile (busyloop lab): ARM9 cycles by PC, outside / in IRQ mode (CSV),\n"
+        "                       from interval --hist9-skip N on (default 0) to --profile-frames\n"
+        "  --range9 LO:HI[:SLO:SHI]  with --profile (busyloop lab, repeatable, hex): per interval, non-IRQ cycles\n"
+        "                       with the PC in [LO,HI) or, once there, in [SLO,SHI) until it leaves both; entries;\n"
+        "                       VCOUNT at the first entry and the last exit (profile log columns)\n"
+        "  --shot-prefix P      (busyloop lab) script SHOT lines write P.f<FRAME>.ppm instead of next to --screenshot\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
 
 int main(int argc, char** argv)
 {
+    std::string shotprefix;  // busyloop lab: --shot-prefix
     std::string rom, mode = "ds", biosdir, nandpath, sddir, shot, scriptpath, dumppath, wpaap, wpassid;
     std::vector<u8> wpapmk;
     long tracepc = -1, sdtracefrom = -1;
@@ -564,6 +594,7 @@ int main(int argc, char** argv)
         else if (a == "--frames") frames = std::stol(next());
         else if (a == "--until") hl::until = next();
         else if (a == "--screenshot") shot = next();
+        else if (a == "--shot-prefix") shotprefix = next();
         else if (a == "--keys") keys = std::stoul(next(), nullptr, 0);
         else if (a == "--script") scriptpath = next();
         else if (a == "--dump-ram") dumppath = next();
@@ -600,6 +631,15 @@ int main(int argc, char** argv)
         else if (a == "--profile-arm7-range") { std::string v = next(); size_t c = v.find(':'); prof::arm7 = true;
             prof::arm7lo = std::stoul(v.substr(0, c), nullptr, 0); prof::arm7hi = std::stoul(v.substr(c + 1), nullptr, 0); }
         else if (a == "--profile-idle-roles") prof::rolespath = next();
+        else if (a == "--hist9") prof::hist9path = next();
+        else if (a == "--hist9-skip") prof::hist9skip = std::stol(next());
+        else if (a == "--range9")
+        {
+            std::string v = next(); unsigned lo = 0, hi = 0, slo = 0, shi = 0;
+            int k = std::sscanf(v.c_str(), "%x:%x:%x:%x", &lo, &hi, &slo, &shi);
+            if (k != 2 && k != 4) usage();
+            prof::ranges9.push_back({ lo, hi, slo, shi, false, 0, 0, 0xFFFF, 0xFFFF });
+        }
         else if (a == "--thumb-cycle") thumbcycle = true;
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
@@ -748,6 +788,7 @@ int main(int argc, char** argv)
         prof::nds = nds.get();
         nds->ARM9.ProfOn = true;
         nds->ARM9.ProfVBlank = prof::on_vblank;
+        nds->ARM9.Ranges9 = prof::ranges9;
         if (!proflog.empty())
         {
             prof::log = std::fopen(proflog.c_str(), "w");
@@ -755,7 +796,10 @@ int main(int argc, char** argv)
             std::fprintf(prof::log, "frame,module_vblank,module_idle,module_irq_mode,busy,idle_arrivals,lag,arm9_pc,arm7_pc,arm9_cpsr,halted,halted_bios,"
                          "game,game_irq,game_instr,game_imiss,game_dreadmiss,game_dwritemiss,game_writeback,game_iextra,game_dextra,"
                          "poll_i,poll_d,poll_wb,rev_i,rev_d,arm7_busy,arm7_range,game_extra_irq,resumes,irqs,irq_max,"
-                         "masked,masked_pend,masked_pend_max\n");
+                         "masked,masked_pend,masked_pend_max");
+            for (size_t k = 0; k < prof::ranges9.size(); k++)
+                std::fprintf(prof::log, ",r%zu_cyc,r%zu_entries,r%zu_first_line,r%zu_last_line", k, k, k, k);
+            std::fprintf(prof::log, "\n");
         }
     }
     if ((scriptfromgame || prof::cachefromgame) && !profile) usage();
@@ -856,7 +900,7 @@ int main(int argc, char** argv)
             {
                 // RAM dump / screenshot of what the previous frame left, next to
                 // --dump-ram / --screenshot, named by script frame: FILE.f<frame>
-                const std::string& base = p.dump ? dumppath : shot;
+                const std::string& base = p.dump ? dumppath : (shotprefix.empty() ? shot : shotprefix);
                 if (st == p.frame && !base.empty())
                 {
                     std::string out = base + ".f" + std::to_string(p.frame);
