@@ -76,6 +76,8 @@ std::string pcspath;        // --profile-pcs
 std::map<u32, ARMv5::ProfPCStat> pcs;
 std::map<u32, u64> dmiss;
 std::string idlepcspath;    // --profile-idle-pcs
+std::string idledmisspath; // --profile-idle-dmiss: module idle-path D misses / uncached accesses per word
+std::map<u32, u64> idledmiss;
 std::string bootpcspath;    // --profile-boot-pcs
 std::vector<ARMv5::ProfPCStat> bootpcs;
 bool bootarmed = false;
@@ -176,6 +178,7 @@ static void on_vblank(ARMv5& cpu)
             }
             if (!pcspath.empty()) { cpu.ProfPCs = &pcs; cpu.ProfDMiss = &dmiss; cpu.ProfPrevStats = cpu.CacheStats; }
             if (!idlepcspath.empty()) { idlepcs.assign(0x80000 / 2, {}); cpu.ProfIdlePCs = &idlepcs; cpu.ProfPrevStats = cpu.CacheStats; }
+            if (!idledmisspath.empty()) { if (idlepcs.empty()) idlepcs.assign(0x80000 / 2, {}); cpu.ProfIdlePCs = &idlepcs; cpu.ProfIdleDMiss = &idledmiss; }
             if (!gamepcspath.empty()) cpu.ProfGamePCs = &gamepcs;
             if (arm7)
             {
@@ -226,7 +229,7 @@ static void on_vblank(ARMv5& cpu)
         if (stopafter >= 0 && (long)n >= stopafter)
         {
             done = true;
-            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr; cpu.ProfRoles = nullptr;
+            cpu.ProfPCs = nullptr; cpu.ProfDMiss = nullptr; cpu.ProfIdleDMiss = nullptr; cpu.ProfIdlePCs = nullptr; cpu.ProfGamePCs = nullptr; cpu.ProfRoles = nullptr;
             nds->ARM7.Prof7Blocks = nullptr;
         }
     }
@@ -520,6 +523,7 @@ int main(int argc, char** argv)
         else if (a == "--cache-model-from-game") prof::cachefromgame = true;
         else if (a == "--profile-pcs") prof::pcspath = next();
         else if (a == "--profile-idle-pcs") prof::idlepcspath = next();
+        else if (a == "--profile-idle-dmiss") prof::idledmisspath = next();
         else if (a == "--profile-boot-pcs") prof::bootpcspath = next();
         else if (a == "--profile-game-pcs") prof::gamepcspath = next();
         else if (a == "--whatif-module-isets") whatifi = std::stoul(next(), nullptr, 0);
@@ -950,6 +954,18 @@ int main(int argc, char** argv)
                                  (unsigned long long)e.Cycles, (unsigned long long)e.IMiss, (unsigned long long)e.DReadMiss,
                                  (unsigned long long)e.DWriteMiss, (unsigned long long)e.MaskedPend);
             }
+            std::fclose(pf);
+        }
+    }
+    if (profile && !prof::idledmisspath.empty())
+    {
+        FILE* pf = std::fopen(prof::idledmisspath.c_str(), "w");
+        if (pf)
+        {
+            std::fprintf(pf, "kind,addr,count\n");
+            for (auto& [a, n] : prof::idledmiss)
+                std::fprintf(pf, "%s,%08x,%llu\n", (a & 2) ? ((a & 1) ? "uncached_w" : "uncached_r") : ((a & 1) ? "dmiss_w" : "dmiss_r"),
+                             a & ~3u, (unsigned long long)n);
             std::fclose(pf);
         }
     }

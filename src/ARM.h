@@ -397,6 +397,7 @@ public:
     struct ProfPCStat { u64 Cycles, Count, IMiss, DReadMiss, DWriteMiss, MaskedPend; };
     std::map<u32, ProfPCStat>* ProfPCs = nullptr;
     std::map<u32, u64>* ProfDMiss = nullptr;
+    std::map<u32, u64>* ProfIdleDMiss = nullptr;   // --profile-idle-dmiss: module idle-path misses per address
     // Optional: the module's idle work (PC in the module, not the VBlank
     // call) by PC, indexed by (addr - ProfLo) / 2: what CPI the evaluation
     // gets (cycles per instruction, cache misses). A frontend sizes it.

@@ -782,6 +782,7 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
             e.DReadMiss += CacheStats.DReadMiss - ProfPrevStats.DReadMiss;
             e.DWriteMiss += CacheStats.DWriteMiss - ProfPrevStats.DWriteMiss;
             if ((cpsr & 0x80) && (NDS.IME[0] & 1) && (NDS.IE[0] & NDS.IF[0])) e.MaskedPend += c;
+            if (ProfIdleDMiss) for (u32 k = 0; k < ProfPendN; k++) (*ProfIdleDMiss)[ProfPend[k]]++;
         }
     }
     if (ProfRoles && in && !vbl && !irq)

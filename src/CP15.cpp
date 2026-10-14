@@ -636,7 +636,7 @@ s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s3
         }
     }
 
-    if (ProfDMiss && ProfPendN < 8) ProfPend[ProfPendN++] = (addr & ~3u) | (write ? 1 : 0);
+    if ((ProfDMiss || ProfIdleDMiss) && ProfPendN < 8) ProfPend[ProfPendN++] = (addr & ~3u) | (write ? 1 : 0);
     if (write)
     {
         CacheStats.DWriteMiss++;
@@ -1104,7 +1104,7 @@ inline s32 ARMv5::DataCacheCycles(u32 addr, bool write, bool seq, s32 table)
     u8 pu = PU_Map[addr >> 12];
     if (!(pu & 0x10))
     {
-        if (ProfDMiss && ProfPendN < 8) ProfPend[ProfPendN++] = (addr & ~3u) | 2 | (write ? 1 : 0);
+        if ((ProfDMiss || ProfIdleDMiss) && ProfPendN < 8) ProfPend[ProfPendN++] = (addr & ~3u) | 2 | (write ? 1 : 0);
         return table;
     }
     u8* bus = NDS.ARM9MemTimings[addr >> 14];
