@@ -107,6 +107,7 @@ std::vector<ARMv5::Range9> ranges9;
 std::vector<ARMv5::Pass9> passes9;    // gsdd lab: --pass9 ENTRY:RET:WORK,...
 std::vector<std::pair<u32, u64>> counts9;   // gsdd lab: --count9 PC
 std::vector<ARMv5::Sp9> sps9;               // gsdd lab: --sp9 LO:HI
+FILE* thr9csv = nullptr;            // dkr lab: --thr9-csv FILE (per interval, per thread)
 bool forcestart = false;             // gsdd lab: --load-state: the profile starts at the first interval   // --range9 LO:HI[:SLO:SHI] (columns in the profile log)
 u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
 s64 giextra = 0, gdextra = 0;
@@ -270,6 +271,7 @@ static void on_vblank(ARMv5& cpu)
             for (auto& [pc, k] : cpu.Counts9) std::fprintf(log, ",%llu", (unsigned long long)k);
         if (log) std::fprintf(log, ",%llu", (unsigned long long)cpu.StallUsed);
         if (log) for (auto& sp : cpu.Sps9) std::fprintf(log, ",%llu", (unsigned long long)sp.Cyc);
+        if (log && cpu.Thr9Info) std::fprintf(log, ",%llu,%llu", (unsigned long long)cpu.Thr9Sw, (unsigned long long)cpu.Thr9SwIrq);
         if (log) std::fprintf(log, "\n");
         if (stopafter >= 0 && (long)n >= stopafter)
         {
@@ -286,6 +288,17 @@ static void on_vblank(ARMv5& cpu)
         cpu.ProfWaitEvent('V', p.Swi5);
     }
     else if (done) cpu.ProfWaitLog = nullptr;
+    if (thr9csv && startframe >= 0 && !done)
+    {
+        auto rd = [](u32 a) { return *(u32*)&nds->MainRAM[a & nds->MainRAMMask & ~3u]; };
+        for (auto& [t, s] : cpu.Thr9Stats)
+            if (s.Cyc || s.Ins)
+                std::fprintf(thr9csv, "%ld,%08x,%u,%u,%llu,%llu,%llu\n", hl::frame, t, t ? rd(t + 0x6C) : 0, t ? rd(t + 0x70) : 0,
+                             (unsigned long long)s.Cyc, (unsigned long long)s.Ins, (unsigned long long)s.IrqIns);
+        std::fprintf(thr9csv, "%ld,irq,0,0,%llu,0,0\n", hl::frame, (unsigned long long)cpu.Thr9IrqCyc);
+    }
+    for (auto& [t, s] : cpu.Thr9Stats) s = {};
+    cpu.Thr9IrqCyc = cpu.Thr9Sw = cpu.Thr9SwIrq = 0;
     cpu.ProfFrame = (u32)hl::frame;
     u32 halts = p.Halts;
     p = {};
@@ -598,8 +611,15 @@ static void usage()
         "  --access9 LO:SIZE    (gsdd lab, hex) ARM9 data reads/writes in the range by pc, summary at exit\n"
         "  --stall9 PC:UNIT:PERFRAME (gsdd lab) emulate a preemptible gate at PC: burn UNIT ARM9 cycles per arrival,\n"
         "                       at most PERFRAME per frame; --stall9-zero ADDR (hex, repeatable): only while that word is 0\n"
+        "                       --stall9-eq A:B (dkr lab, hex, repeatable): only while word A equals word B\n"
         "  --hash9 FILE         (gsdd lab) per frame: screens, SPU output, main RAM (4 MB) hashes; --hash9-skip LO:SIZE\n"
         "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta)\n"
+        "  --thr9 INFO          (dkr lab, hex) SDK thread accounting: current thread = [INFO+4]; prof log thr_sw, thr_sw_irq\n"
+        "  --thr9-csv FILE      (dkr lab) per interval and thread: non-IRQ cycles, switches in (from IRQ mode)\n"
+        "  --callers9 PC        (dkr lab, hex, repeatable) executions of PC by lr and thread, summary at exit\n"
+        "  --ev9 FILE --ev9-pc PC [--ev9-hash LO:LEN]  (dkr lab) one line per execution of PC: times, thread, regs,\n"
+        "                       SPU ch1/ch3/capture0 positions, main-RAM range hashes\n"
+        "  --spu7 FILE          (dkr lab) every ARM7 write to the SPU registers (frame, ARM7 time, addr, size, value, pc)\n"
         "  --shot-prefix P      (busyloop lab) script SHOT lines write P.f<FRAME>.ppm instead of next to --screenshot\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
@@ -618,6 +638,8 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
+    u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, ev9path, spu7path;   // dkr lab
+    std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     u32 stallpc = 0; unsigned long long stallunit = 0, stallpf = 0, stallcheck = 0; std::vector<u32> stallzero;   // gsdd lab: --stall9
     std::string hashpath, audiopath; std::vector<std::pair<u32, u32>> hashskip;                               // gsdd lab: --hash9
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
@@ -721,7 +743,15 @@ int main(int argc, char** argv)
             stallpc = pc; stallunit = u; stallpf = pf;
         }
         else if (a == "--stall9-check") stallcheck = std::stoull(next());
+        else if (a == "--thr9") thr9info = std::stoul(next(), nullptr, 16);
+        else if (a == "--thr9-csv") thr9path = next();
+        else if (a == "--callers9") call9pcs.push_back(std::stoul(next(), nullptr, 16));
+        else if (a == "--ev9") ev9path = next();
+        else if (a == "--ev9-pc") ev9pcs.push_back(std::stoul(next(), nullptr, 16));
+        else if (a == "--ev9-hash") { std::string v = next(); unsigned lo = 0, n = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &n) != 2) usage(); ev9hash.push_back({lo, n}); }
+        else if (a == "--spu7") spu7path = next();
         else if (a == "--stall9-zero") stallzero.push_back(std::stoul(next(), nullptr, 16));
+        else if (a == "--stall9-eq") { std::string v = next(); unsigned x = 0, y = 0; if (std::sscanf(v.c_str(), "%x:%x", &x, &y) != 2) usage(); stalleq.push_back({x, y}); }
         else if (a == "--hash9") hashpath = next();
         else if (a == "--audio-out") audiopath = next();
         else if (a == "--hash9-skip") { std::string v = next(); unsigned lo = 0, n = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &n) != 2) usage(); hashskip.push_back({lo, n}); }
@@ -894,6 +924,7 @@ int main(int argc, char** argv)
             for (auto& [pc, k] : prof::counts9) std::fprintf(prof::log, ",c%x", pc);
             std::fprintf(prof::log, ",stall_cyc");
             for (auto& sp : prof::sps9) std::fprintf(prof::log, ",sp%x_cyc", sp.Lo);
+            if (thr9info) std::fprintf(prof::log, ",thr_sw,thr_sw_irq");
             std::fprintf(prof::log, "\n");
         }
     }
@@ -969,7 +1000,12 @@ int main(int argc, char** argv)
     }
 
     long f = 0, scriptbase = -1;
-    nds->ARM9.StallPC = stallpc; nds->ARM9.StallUnit = stallunit; nds->ARM9.StallPerFrame = stallpf; nds->ARM9.StallZero = stallzero; nds->ARM9.StallCheck = stallcheck;
+    nds->ARM9.Thr9Info = thr9info; nds->ARM9.Call9PCs = call9pcs; nds->ARM9.Ev9PCs = ev9pcs; nds->ARM9.Ev9Hash = ev9hash;
+    if (!thr9path.empty()) prof::thr9csv = std::fopen(thr9path.c_str(), "w");
+    if (prof::thr9csv) std::fprintf(prof::thr9csv, "frame,thread,id,prio,cyc,switch_in,switch_in_irq\n");
+    if (!ev9path.empty()) nds->ARM9.Ev9Log = std::fopen(ev9path.c_str(), "w");
+    if (!spu7path.empty()) nds->Spu7Log = std::fopen(spu7path.c_str(), "w");
+    nds->ARM9.StallPC = stallpc; nds->ARM9.StallUnit = stallunit; nds->ARM9.StallPerFrame = stallpf; nds->ARM9.StallZero = stallzero; nds->ARM9.StallEq = stalleq; nds->ARM9.StallCheck = stallcheck;
     FILE* hashf = hashpath.empty() ? nullptr : std::fopen(hashpath.c_str(), "w");
     FILE* audiof = audiopath.empty() ? nullptr : std::fopen(audiopath.c_str(), "wb");
     std::vector<s16> abuf(1 << 16);
@@ -1143,6 +1179,11 @@ int main(int argc, char** argv)
     if (tio) std::fclose(tio);
     if (hashf) std::fclose(hashf);
     if (audiof) std::fclose(audiof);
+    if (prof::thr9csv) std::fclose(prof::thr9csv);
+    if (nds->ARM9.Ev9Log) std::fclose(nds->ARM9.Ev9Log);
+    if (nds->Spu7Log) std::fclose(nds->Spu7Log);
+    for (auto& [k, n] : nds->ARM9.Call9)
+        std::fprintf(stderr, "[runner] callers9 pc=%08x lr=%08x thread=%08x: %llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), (unsigned long long)n);
     if (stallpc) std::fprintf(stderr, "[runner] stall pc %08x unit %llu per interval %llu check %llu: %llu units, %llu cycles in all, %llu aborted\n", stallpc, stallunit, stallpf, stallcheck,
                               (unsigned long long)nds->ARM9.StallUnits, (unsigned long long)nds->ARM9.StallTotal, (unsigned long long)nds->ARM9.StallAborts);
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");

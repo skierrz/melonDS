@@ -291,6 +291,10 @@ private:
 
     std::array<SPUChannel, 16> Channels;
     std::array<SPUCaptureUnit, 2> Capture;
+public:
+    // dkr lab: read-only views for the runner's event log
+    const SPUChannel& Chan(int i) const { return Channels[i]; }
+    const SPUCaptureUnit& Cap(int i) const { return Capture[i]; }
 };
 
 }

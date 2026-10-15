@@ -670,14 +670,12 @@ void ARMv5::Execute()
             {
                 if (!StallBusy && StallUsed + StallUnit <= StallPerFrame)
                 {
-                    bool ok = true;
-                    for (u32 a : StallZero) if (*(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]) { ok = false; break; }
-                    if (ok) { StallBusy = true; StallLeft = StallUnit; StallUnits++; StallSinceCheck = 0; }
+                    if (StallOK()) { StallBusy = true; StallLeft = StallUnit; StallUnits++; StallSinceCheck = 0; }
                 }
                 if (StallBusy && StallCheck && StallSinceCheck >= StallCheck)
                 {
                     StallSinceCheck = 0;
-                    for (u32 a : StallZero) if (*(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]) { StallBusy = false; StallLeft = 0; StallAborts++; break; }
+                    if (!StallOK()) { StallBusy = false; StallLeft = 0; StallAborts++; }
                 }
                 if (StallBusy)
                 {
@@ -825,6 +823,20 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     }
     const u64 c = (u64)Cycles << (2 - NDS.ARM9ClockShift);
     const bool irq = (cpsr & 0x1F) == 0x12;
+    if (Thr9Info)
+    {
+        const u32 cur = *(u32*)&NDS.MainRAM[(Thr9Info + 4) & NDS.MainRAMMask & ~3u];
+        if (cur != Thr9Cur)
+        {
+            auto& t = Thr9Stats[cur];
+            t.Ins++; Thr9Sw++;
+            if (irq) { t.IrqIns++; Thr9SwIrq++; }
+            Thr9Cur = cur;
+        }
+        if (!irq) Thr9Stats[cur].Cyc += c; else Thr9IrqCyc += c;
+    }
+    for (u32 p : Call9PCs) if (p == addr) Call9[{ addr, R[14], Thr9Cur }]++;
+    if (Ev9Log) for (u32 p : Ev9PCs) if (p == addr) { Ev9Event(addr, cpsr); break; }
     const bool in = addr >= ProfLo && addr < ProfHi;
     const bool vbl = in && ((addr >= ProfVBlankLo && addr < ProfVBlankHi)
                             || (R[13] >= ProfIrqStackLo && R[13] <= ProfIrqStackHi));
@@ -1607,5 +1619,34 @@ void ARMv5::Acc9Hit(u32 addr, int size, bool write, u32 val)
             v.LastVal = val;
         }
     }
+}
+}
+
+namespace melonDS
+{
+void ARMv5::Ev9Event(u32 addr, u32 cpsr)
+{
+    const auto& c1 = NDS.SPU.Chan(1); const auto& c3 = NDS.SPU.Chan(3); const auto& k0 = NDS.SPU.Cap(0);
+    std::fprintf(Ev9Log, "%u,%llu,%llu,%08x,%x,%08x,%08x,%08x,%08x,%08x,%08x,%d,%u,%d,%d,%u", ProfFrame,
+                 (unsigned long long)NDS.ARM9Timestamp, (unsigned long long)NDS.ARM7Timestamp, addr, cpsr & 0x1F, Thr9Cur,
+                 R[0], R[1], R[2], R[3], R[14], c1.Pos, c1.FIFOReadOffset, c3.Pos, k0.Pos, k0.FIFOWriteOffset);
+    for (auto [lo, n] : Ev9Hash)
+    {
+        u64 h = 1469598103934665603ull;
+        for (u32 i = 0; i < n; i++) { h ^= NDS.MainRAM[(lo + i) & NDS.MainRAMMask]; h *= 1099511628211ull; }
+        std::fprintf(Ev9Log, ",%016llx", (unsigned long long)h);
+    }
+    std::fprintf(Ev9Log, "\n");
+}
+}
+
+namespace melonDS
+{
+bool ARMv5::StallOK()
+{
+    auto rd = [this](u32 a) { return *(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]; };
+    for (u32 a : StallZero) if (rd(a)) return false;
+    for (auto [a, b] : StallEq) if (rd(a) != rd(b)) return false;
+    return true;
 }
 }

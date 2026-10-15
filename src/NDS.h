@@ -19,6 +19,7 @@
 #ifndef NDS_H
 #define NDS_H
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <optional>
@@ -327,6 +328,7 @@ public: // TODO: Encapsulate the rest of these members
     ARMv5 ARM9;
     ARMv4 ARM7;
     melonDS::SPU SPU;
+    FILE* Spu7Log = nullptr;   // dkr lab: --spu7 FILE, every ARM7 write to the SPU registers
     melonDS::Mic Mic;
     SPIHost SPI;
     melonDS::RTC RTC;

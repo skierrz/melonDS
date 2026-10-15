@@ -3938,6 +3938,7 @@ void NDS::ARM7IOWrite8(u32 addr, u8 val)
 
     if (addr >= 0x04000400 && addr < 0x04000520)
     {
+        if (Spu7Log) std::fprintf(Spu7Log, "%u,%llu,%x,8,%x,%x\n", ARM9.ProfFrame, (unsigned long long)ARM7Timestamp, addr, (u32)val, ARM7.R[15]);
         SPU.Write8(addr, val);
         return;
     }
@@ -4087,6 +4088,7 @@ void NDS::ARM7IOWrite16(u32 addr, u16 val)
 
     if (addr >= 0x04000400 && addr < 0x04000520)
     {
+        if (Spu7Log) std::fprintf(Spu7Log, "%u,%llu,%x,16,%x,%x\n", ARM9.ProfFrame, (unsigned long long)ARM7Timestamp, addr, (u32)val, ARM7.R[15]);
         SPU.Write16(addr, val);
         return;
     }
@@ -4215,6 +4217,7 @@ void NDS::ARM7IOWrite32(u32 addr, u32 val)
 
     if (addr >= 0x04000400 && addr < 0x04000520)
     {
+        if (Spu7Log) std::fprintf(Spu7Log, "%u,%llu,%x,32,%x,%x\n", ARM9.ProfFrame, (unsigned long long)ARM7Timestamp, addr, (u32)val, ARM7.R[15]);
         SPU.Write32(addr, val);
         return;
     }

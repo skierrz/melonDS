@@ -20,6 +20,7 @@
 #define ARM_H
 
 #include <algorithm>
+#include <cstdio>
 #include <optional>
 #include <map>
 #include <array>
@@ -467,6 +468,22 @@ public:
     bool StallBusy = false;
     u64 StallCheck = 0, StallSinceCheck = 0, StallAborts = 0;   // --stall9-check N: re-test the zero words every N cycles; abort the unit if one is set
     std::vector<u32> StallZero;
+    std::vector<std::pair<u32, u32>> StallEq;   // dkr lab: --stall9-eq A:B, only while word A == word B
+    bool StallOK();
+    // dkr lab: --thr9 INFO: SDK thread accounting. The current thread is the word at INFO+4 (OSThreadInfo.current);
+    // a change of it is a thread switch (counted as an IRQ switch when it happens in IRQ mode). Non-IRQ cycles are
+    // charged to the current thread.
+    struct Thr9 { u64 Cyc = 0, Ins = 0, IrqIns = 0; };
+    u32 Thr9Info = 0, Thr9Cur = 0; u64 Thr9Sw = 0, Thr9SwIrq = 0, Thr9IrqCyc = 0;
+    std::map<u32, Thr9> Thr9Stats;
+    // dkr lab: --callers9 PC: executions of PC by (lr, current thread), summary at exit
+    std::vector<u32> Call9PCs;
+    std::map<std::tuple<u32, u32, u32>, u64> Call9;
+    // dkr lab: --ev9 FILE --ev9-pc PC (repeatable) --ev9-hash LO:LEN (repeatable): one line per execution of PC
+    // (any mode): frame, ARM9 and ARM7 timestamps, pc, thread, r0-r3, lr, SPU channel 1/3 and capture 0 positions,
+    // hashes of the main-RAM ranges
+    FILE* Ev9Log = nullptr; std::vector<u32> Ev9PCs; std::vector<std::pair<u32, u32>> Ev9Hash;
+    void Ev9Event(u32 addr, u32 cpsr);
     void ShadowReset();
     bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
     // Optional: the idle work by role (--profile-idle-roles). ProfRoleOf maps a
