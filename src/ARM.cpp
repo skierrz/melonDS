@@ -666,6 +666,20 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (DscIdeal && ProfOn && ProfInModule(profaddr) && (CPSR & 0x1F) != 0x12 && NDS.HaltInterrupted(0))
+            {
+                // audioid lab: take the IRQ now, as a halted ARM9 would at this timestamp
+                if (!(CPSR & 0x80)) { DscIrqIdeal++; TriggerIRQ(); continue; }
+                if (DscIdeal >= 2)
+                {
+                    const u32 saved = CPSR;
+                    CPSR &= ~0x80u;
+                    TriggerIRQ();
+                    R_IRQ[2] = saved;   // the handler returns to the module's masked state
+                    DscIrqMasked++;
+                    continue;
+                }
+            }
             if (Irq9On && profaddr == 0xFFFF0018 && (CPSR & 0x1F) == 0x12 && Irq9Last != NDS.ARM9Timestamp)
             {
                 Irq9Last = NDS.ARM9Timestamp;
@@ -773,6 +787,12 @@ void ARMv5::Execute()
 
         }
 
+        if (DscIdeal && ProfCurMod && NDS.ARM9Timestamp + Cycles > NDS.ARM9Target)
+        {
+            // audioid lab: a module instruction never runs past the slice end
+            DscClampN++; DscClampCyc += NDS.ARM9Timestamp + Cycles - NDS.ARM9Target;
+            Cycles = (s32)(NDS.ARM9Target - NDS.ARM9Timestamp);
+        }
         NDS.ARM9Timestamp += Cycles;
         Cycles = 0;
     }

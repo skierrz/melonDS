@@ -588,6 +588,7 @@ static s32 ShadowData(ARMv5& cpu, NDS& nds, u32 addr, bool write, bool writeback
 
 s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached)
 {
+    if (DscCache && ProfOn && ProfCurMod) return DscCache == 1 ? 1 : uncached;   // audioid lab
     if (!ProfOn || ProfCurMod) return CacheModelDataReal(addr, write, writeback, seq, uncached);
     CacheModelStats before = CacheStats;
     s32 cost = CacheModelDataReal(addr, write, writeback, seq, uncached);
@@ -1083,7 +1084,12 @@ u32 ARMv5::CodeRead32(u32 addr, bool branch)
     CodeCycles = RegionCodeCycles;
     if (CodeCycles == 0xFF) // cached memory. hax
     {
-        if (branch || !(addr & 0x1F))
+        if (DscCache && ProfOn && ProfInModule(addr))
+        {
+            u8* t = NDS.ARM9MemTimings[addr >> 14];
+            CodeCycles = DscCache == 1 ? 1 : ((branch ? t[2] : t[3]) << NDS.ARM9ClockShift);
+        }
+        else if (branch || !(addr & 0x1F))
             CodeCycles = CacheModel ? CacheModelCode(addr) : kCodeCacheTiming;//ICacheLookup(addr);
         else
             CodeCycles = 1;

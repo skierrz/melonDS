@@ -634,6 +634,13 @@ static void usage()
         "  --ev9-word ADDR / --ev9-hashp PTR:OFF:LEN  (dkr lab, hex) more --ev9 columns: a word; a hash of LEN bytes at [PTR]+OFF\n"
         "  --spu7 FILE          (dkr lab) every ARM7 write to the SPU registers (frame, ARM7 time, addr, size, value, pc)\n"
         "  --shot-prefix P      (busyloop lab) script SHOT lines write P.f<FRAME>.ppm instead of next to --screenshot\n"
+        "  --dsc-cache N        (audioid lab) module code/data accesses skip the cache model: 1 = cost 1 cycle, 2 = bus cost\n"
+        "  --dsc-ideal N        (audioid lab) module instructions never run past a slice end; a pending IRQ is taken before\n"
+        "                       the next module instruction (as from a halt); 2 = also when the module masked IRQs\n"
+        "  --dsc-neutral        (audioid lab) after --load-state: the game's OS_Halt back to stock and the ARM7's DScheevos\n"
+        "                       VBlank work off (ce7 valueBits bit 28): nds-bootstrap without DScheevos from that point\n"
+        "  --dsc-a7free         (audioid lab) the ARM7's DScheevos VBlank work off; the runner bumps the module's VBlank count\n"
+        "                       (header +0x24) after each frame instead, costing no emulated time\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -651,6 +658,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
+    int dsccache = 0, dscideal = 0; bool dscneutral = false, dsca7free = false;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     unsigned long long stallvbl = 0, stallstep = 64;   // dkr lab: --stall9-vbl, --stall9-step
@@ -750,6 +758,10 @@ int main(int argc, char** argv)
             saveat.push_back({std::stol(v.substr(0, c)), v.substr(c + 1)});
         }
         else if (a == "--load-state") loadstate = next();
+        else if (a == "--dsc-cache") dsccache = std::stoi(next());
+        else if (a == "--dsc-ideal") dscideal = std::stoi(next());
+        else if (a == "--dsc-neutral") dscneutral = true;
+        else if (a == "--dsc-a7free") dsca7free = true;
         else if (a == "--stall9")
         {
             std::string v = next(); unsigned pc = 0; unsigned long long u = 0, pf = 0;
@@ -1054,6 +1066,32 @@ int main(int argc, char** argv)
         f = f0 + 1; scriptbase = sb; frames += f; prof::forcestart = true;
         std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
     }
+    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal;
+    if (dscneutral || dsca7free)
+    {
+        // audioid lab: switch DScheevos off on the ARM7 (and with --dsc-neutral on the ARM9 too), in place
+        int ce7n = 0;
+        for (u32 c : {0x037E0400u, 0x037F0000u, 0x03020400u, 0x03030000u})
+        {
+            if (nds->ARM7Read32(c) != c) continue;
+            u32 vb = nds->ARM7Read32(c + 0x4C);
+            std::fprintf(stderr, "[dsc] ce7 at %08x, valueBits %08x -> %08x\n", c, vb, vb & ~(1u << 28));
+            nds->ARM7Write32(c + 0x4C, vb & ~(1u << 28)); ce7n++;
+        }
+        if (!ce7n) std::fprintf(stderr, "[dsc] WARNING: no ce7 header found\n");
+        if (dscneutral)
+        {
+            u32 halt = prof::ram32(prof::base + 0x14); int n = 0;
+            for (u32 a = 0x02000000; a < 0x02400000; a += 4)
+                if (prof::ram32(a) == 0xE51FF004 && prof::ram32(a + 4) == halt && prof::ram32(a + 8) == 0xE12FFF1E)
+                {
+                    u32 o = a & nds->MainRAMMask; u32 w0 = 0xE3A00000, w1 = 0xEE070F90;
+                    std::memcpy(&nds->MainRAM[o], &w0, 4); std::memcpy(&nds->MainRAM[o + 4], &w1, 4); n++;
+                    std::fprintf(stderr, "[dsc] OS_Halt at %08x restored to stock\n", a);
+                }
+            if (!n) std::fprintf(stderr, "[dsc] WARNING: no patched OS_Halt found (halt entry %08x)\n", halt);
+        }
+    }
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
         for (auto& p : pokes)
@@ -1134,6 +1172,10 @@ int main(int argc, char** argv)
         }
         nds->ARM9.StallUsed = 0; nds->ARM9.StallVblUsed = 0;
         nds->RunFrame();
+        if (dsca7free)
+        {
+            u32 o = (prof::base + 0x24) & nds->MainRAMMask; u32 v; std::memcpy(&v, &nds->MainRAM[o], 4); v++; std::memcpy(&nds->MainRAM[o], &v, 4);
+        }
         if (hashf)
         {
             // per frame: both screens, the audio the SPU produced, main RAM (first 4 MB, skips zeroed) as
@@ -1208,6 +1250,10 @@ int main(int argc, char** argv)
     if (nds->Spu7Log) std::fclose(nds->Spu7Log);
     for (auto& [k, n] : nds->ARM9.Call9)
         std::fprintf(stderr, "[runner] callers9 pc=%08x lr=%08x thread=%08x: %llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), (unsigned long long)n);
+    if (dscideal || dsccache)
+        std::fprintf(stderr, "[dsc] ideal %d cache %d: IRQs taken at once in module code %llu (masked %llu); slice ends clamped %llu (%llu cycles dropped)\n",
+                     dscideal, dsccache, (unsigned long long)nds->ARM9.DscIrqIdeal, (unsigned long long)nds->ARM9.DscIrqMasked,
+                     (unsigned long long)nds->ARM9.DscClampN, (unsigned long long)nds->ARM9.DscClampCyc);
     if (stallvbl) std::fprintf(stderr, "[runner] stall at VBlank IRQ: %llu cycles, %llu frames\n", stallvbl, (unsigned long long)nds->ARM9.StallVblN);
     if (stallpc) std::fprintf(stderr, "[runner] stall pc %08x unit %llu per interval %llu check %llu: %llu units, %llu cycles in all, %llu aborted\n", stallpc, stallunit, stallpf, stallcheck,
                               (unsigned long long)nds->ARM9.StallUnits, (unsigned long long)nds->ARM9.StallTotal, (unsigned long long)nds->ARM9.StallAborts);

@@ -472,6 +472,16 @@ public:
     bool StallOK();
     bool Irq9On = false; u64 Irq9[32] {}; u64 Irq9Last = ~0ull;   // --irq9-csv: IRQ vector entries per interval by IF&IE bit
     u64 StallStep = 64;   // --stall9-step N: cycles per burn step (IRQs are taken between steps)
+    // audioid lab (research only): what the module's presence does to the game's timeline.
+    // DscCache 1: module code fetches and data accesses (PC in the module) never look up or fill the cache
+    //   model and cost 1 cycle (an idealised cache-neutral module); 2: they bypass the cache and cost the bus
+    //   (what running the module uncached would cost it; the game's cache is untouched either way).
+    // DscIdeal 1: while the PC is in the module (not IRQ mode), an instruction never runs past the slice
+    //   target (the excess is dropped, so the system and the ARM7 see the same slice ends as with a halted
+    //   ARM9), and a pending enabled IRQ is taken before the next module instruction, as a halted ARM9 takes it;
+    //   2: also when the module has IRQs masked (CPSR.I), returning to the masked state.
+    int DscCache = 0, DscIdeal = 0;
+    u64 DscIrqIdeal = 0, DscIrqMasked = 0, DscClampCyc = 0, DscClampN = 0;
     u64 StallVbl = 0, StallVblUsed = 0, StallVblN = 0;   // dkr lab: --stall9-vbl N: burn N cycles at the IRQ vector when a VBlank IRQ is taken (IRQ time, like a VBlank hook)
     // dkr lab: --thr9 INFO: SDK thread accounting. The current thread is the word at INFO+4 (OSThreadInfo.current);
     // a change of it is a thread switch (counted as an IRQ switch when it happens in IRQ mode). Non-IRQ cycles are
