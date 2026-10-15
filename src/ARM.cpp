@@ -666,6 +666,15 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (StallVbl && profaddr == 0xFFFF0018 && (NDS.IF[0] & NDS.IE[0] & 1) && StallVblUsed < StallVbl)
+            {
+                // a VBlank IRQ was just taken: the ARM9 spends StallVbl cycles in IRQ mode (IRQs are off), once per frame
+                const u64 ch = std::min<u64>(StallVbl - StallVblUsed, 64);
+                StallVblUsed += ch; StallTotal += ch;
+                if (StallVblUsed >= StallVbl) StallVblN++;
+                NDS.ARM9Timestamp += ch;
+                continue;
+            }
             if (StallPC && profaddr == StallPC && (CPSR & 0x1F) != 0x12)
             {
                 if (!StallBusy && StallUsed + StallUnit <= StallPerFrame)
@@ -829,11 +838,19 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
         if (cur != Thr9Cur)
         {
             auto& t = Thr9Stats[cur];
+            if (Thr9Log)
+            {
+                auto rd = [this](u32 a) { return *(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]; };
+                const u32 o = Thr9Cur;
+                std::fprintf(Thr9Log, "%u,%llu,%d,%u,%08x,%u,%u,%u,%08x,%08x,%08x,%u,%u,%u,%08x\n", ProfFrame, (unsigned long long)NDS.ARM9Timestamp,
+                             irq ? 1 : 0, NDS.GPU.VCount, o, o ? rd(o + 0x6C) : 0, o ? rd(o + 0x70) : 0, o ? (rd(o + 0x64) & 0xFFFF) : 0,
+                             Thr9LastPC, Thr9LastLR, cur, cur ? rd(cur + 0x6C) : 0, cur ? rd(cur + 0x70) : 0, cur ? (rd(cur + 0x64) & 0xFFFF) : 0, addr);
+            }
             t.Ins++; Thr9Sw++;
             if (irq) { t.IrqIns++; Thr9SwIrq++; }
             Thr9Cur = cur;
         }
-        if (!irq) Thr9Stats[cur].Cyc += c; else Thr9IrqCyc += c;
+        if (!irq) { Thr9Stats[cur].Cyc += c; Thr9LastPC = addr; Thr9LastLR = R[14]; } else Thr9IrqCyc += c;
     }
     for (u32 p : Call9PCs) if (p == addr) Call9[{ addr, R[14], Thr9Cur }]++;
     if (Ev9Log) for (u32 p : Ev9PCs) if (p == addr) { Ev9Event(addr, cpsr); break; }

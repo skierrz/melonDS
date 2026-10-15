@@ -612,9 +612,11 @@ static void usage()
         "  --stall9 PC:UNIT:PERFRAME (gsdd lab) emulate a preemptible gate at PC: burn UNIT ARM9 cycles per arrival,\n"
         "                       at most PERFRAME per frame; --stall9-zero ADDR (hex, repeatable): only while that word is 0\n"
         "                       --stall9-eq A:B (dkr lab, hex, repeatable): only while word A equals word B\n"
+        "  --stall9-vbl N       (dkr lab) burn N ARM9 cycles in IRQ mode when a VBlank IRQ is taken, once per frame\n"
         "  --hash9 FILE         (gsdd lab) per frame: screens, SPU output, main RAM (4 MB) hashes; --hash9-skip LO:SIZE\n"
         "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta)\n"
         "  --thr9 INFO          (dkr lab, hex) SDK thread accounting: current thread = [INFO+4]; prof log thr_sw, thr_sw_irq\n"
+        "  --thr9-log FILE      (dkr lab) one line per thread switch: from/to thread, id, prio, state, last pc/lr\n"
         "  --thr9-csv FILE      (dkr lab) per interval and thread: non-IRQ cycles, switches in (from IRQ mode)\n"
         "  --callers9 PC        (dkr lab, hex, repeatable) executions of PC by lr and thread, summary at exit\n"
         "  --ev9 FILE --ev9-pc PC [--ev9-hash LO:LEN]  (dkr lab) one line per execution of PC: times, thread, regs,\n"
@@ -638,8 +640,9 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
-    u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, ev9path, spu7path;   // dkr lab
+    u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
+    unsigned long long stallvbl = 0;            // dkr lab: --stall9-vbl
     u32 stallpc = 0; unsigned long long stallunit = 0, stallpf = 0, stallcheck = 0; std::vector<u32> stallzero;   // gsdd lab: --stall9
     std::string hashpath, audiopath; std::vector<std::pair<u32, u32>> hashskip;                               // gsdd lab: --hash9
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
@@ -745,12 +748,14 @@ int main(int argc, char** argv)
         else if (a == "--stall9-check") stallcheck = std::stoull(next());
         else if (a == "--thr9") thr9info = std::stoul(next(), nullptr, 16);
         else if (a == "--thr9-csv") thr9path = next();
+        else if (a == "--thr9-log") thr9logpath = next();
         else if (a == "--callers9") call9pcs.push_back(std::stoul(next(), nullptr, 16));
         else if (a == "--ev9") ev9path = next();
         else if (a == "--ev9-pc") ev9pcs.push_back(std::stoul(next(), nullptr, 16));
         else if (a == "--ev9-hash") { std::string v = next(); unsigned lo = 0, n = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &n) != 2) usage(); ev9hash.push_back({lo, n}); }
         else if (a == "--spu7") spu7path = next();
         else if (a == "--stall9-zero") stallzero.push_back(std::stoul(next(), nullptr, 16));
+        else if (a == "--stall9-vbl") stallvbl = std::stoull(next());
         else if (a == "--stall9-eq") { std::string v = next(); unsigned x = 0, y = 0; if (std::sscanf(v.c_str(), "%x:%x", &x, &y) != 2) usage(); stalleq.push_back({x, y}); }
         else if (a == "--hash9") hashpath = next();
         else if (a == "--audio-out") audiopath = next();
@@ -1003,9 +1008,10 @@ int main(int argc, char** argv)
     nds->ARM9.Thr9Info = thr9info; nds->ARM9.Call9PCs = call9pcs; nds->ARM9.Ev9PCs = ev9pcs; nds->ARM9.Ev9Hash = ev9hash;
     if (!thr9path.empty()) prof::thr9csv = std::fopen(thr9path.c_str(), "w");
     if (prof::thr9csv) std::fprintf(prof::thr9csv, "frame,thread,id,prio,cyc,switch_in,switch_in_irq\n");
+    if (!thr9logpath.empty()) { nds->ARM9.Thr9Log = std::fopen(thr9logpath.c_str(), "w"); if (nds->ARM9.Thr9Log) std::fprintf(nds->ARM9.Thr9Log, "frame,ts9,irq,vcount,from,from_id,from_prio,from_state,from_last_pc,from_last_lr,to,to_id,to_prio,to_state,pc\n"); }
     if (!ev9path.empty()) nds->ARM9.Ev9Log = std::fopen(ev9path.c_str(), "w");
     if (!spu7path.empty()) nds->Spu7Log = std::fopen(spu7path.c_str(), "w");
-    nds->ARM9.StallPC = stallpc; nds->ARM9.StallUnit = stallunit; nds->ARM9.StallPerFrame = stallpf; nds->ARM9.StallZero = stallzero; nds->ARM9.StallEq = stalleq; nds->ARM9.StallCheck = stallcheck;
+    nds->ARM9.StallPC = stallpc; nds->ARM9.StallUnit = stallunit; nds->ARM9.StallPerFrame = stallpf; nds->ARM9.StallZero = stallzero; nds->ARM9.StallEq = stalleq; nds->ARM9.StallVbl = stallvbl; nds->ARM9.StallCheck = stallcheck;
     FILE* hashf = hashpath.empty() ? nullptr : std::fopen(hashpath.c_str(), "w");
     FILE* audiof = audiopath.empty() ? nullptr : std::fopen(audiopath.c_str(), "wb");
     std::vector<s16> abuf(1 << 16);
@@ -1110,7 +1116,7 @@ int main(int argc, char** argv)
                 for (int c = 4; c < 8; c++) { d->NDMAs[c].TraceState(b, sizeof b); std::fprintf(stderr, "[sd]   NDMA7.%d %s\n", c - 4, b); }
             }
         }
-        nds->ARM9.StallUsed = 0;
+        nds->ARM9.StallUsed = 0; nds->ARM9.StallVblUsed = 0;
         nds->RunFrame();
         if (hashf)
         {
@@ -1180,10 +1186,12 @@ int main(int argc, char** argv)
     if (hashf) std::fclose(hashf);
     if (audiof) std::fclose(audiof);
     if (prof::thr9csv) std::fclose(prof::thr9csv);
+    if (nds->ARM9.Thr9Log) std::fclose(nds->ARM9.Thr9Log);
     if (nds->ARM9.Ev9Log) std::fclose(nds->ARM9.Ev9Log);
     if (nds->Spu7Log) std::fclose(nds->Spu7Log);
     for (auto& [k, n] : nds->ARM9.Call9)
         std::fprintf(stderr, "[runner] callers9 pc=%08x lr=%08x thread=%08x: %llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), (unsigned long long)n);
+    if (stallvbl) std::fprintf(stderr, "[runner] stall at VBlank IRQ: %llu cycles, %llu frames\n", stallvbl, (unsigned long long)nds->ARM9.StallVblN);
     if (stallpc) std::fprintf(stderr, "[runner] stall pc %08x unit %llu per interval %llu check %llu: %llu units, %llu cycles in all, %llu aborted\n", stallpc, stallunit, stallpf, stallcheck,
                               (unsigned long long)nds->ARM9.StallUnits, (unsigned long long)nds->ARM9.StallTotal, (unsigned long long)nds->ARM9.StallAborts);
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
