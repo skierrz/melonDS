@@ -148,7 +148,7 @@ static u32 ram32(u32 addr) { u32 v; std::memcpy(&v, &nds->MainRAM[addr & nds->Ma
 static void find_module(ARMv5& cpu)
 {
     u32 size = ram32(base + 8), vblank = ram32(base + 0x10), halt = ram32(base + 0x14);
-    if (ram32(base + 0x3C) == 0x56435344 && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
+    if ((ram32(base) == 0x56435344 || ram32(base + 0x3C) == 0x56435344) && size >= 0x28 && size <= 0x80000 && halt >= base && halt < base + size
         && vblank >= base && vblank < halt)
     {
         // the whole 2 MB region is the module's: code it generates at run time lives in its heap
@@ -398,7 +398,7 @@ static void report(NDS& nds)
 // audioid lab: the module's status counters (dscm_status_t: active, hardcore, frames snapshotted, evaluated, dropped, missed)
 static void dsc_status(const char* when)
 {
-    if (prof::ram32(prof::base + 0x3C) != 0x56435344) { std::fprintf(stderr, "[dsc] status %s: no module\n", when); return; }
+    if (prof::ram32(prof::base) != 0x56435344 && prof::ram32(prof::base + 0x3C) != 0x56435344) { std::fprintf(stderr, "[dsc] status %s: no module\n", when); return; }
     u32 st = prof::ram32(prof::base + 0x1C);
     std::fprintf(stderr, "[dsc] status %s: active %u snapshotted %u evaluated %u dropped %u missed %u\n", when,
                  prof::ram32(st), prof::ram32(st + 8), prof::ram32(st + 12), prof::ram32(st + 16), prof::ram32(st + 20));
