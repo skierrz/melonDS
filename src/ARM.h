@@ -480,7 +480,7 @@ public:
     //   target (the excess is dropped, so the system and the ARM7 see the same slice ends as with a halted
     //   ARM9), and a pending enabled IRQ is taken before the next module instruction, as a halted ARM9 takes it;
     //   2: also when the module has IRQs masked (CPSR.I), returning to the masked state.
-    int DscCache = 0, DscIdeal = 0, DscIdealLat = 0;   // DscIdealLat: cycles added at such an IRQ (a stock halting MCR leaves its own cost pending until the wake)
+    int DscCache = 0, DscIdeal = 0, DscIdealLat = 0; bool DscNull = false;   // DscNull: the module never runs: its halt entry halts and returns at once   // DscIdealLat: cycles added at such an IRQ (a stock halting MCR leaves its own cost pending until the wake)
     u64 DscIrqIdeal = 0, DscIrqMasked = 0, DscClampCyc = 0, DscClampN = 0;
     u64 StallVbl = 0, StallVblUsed = 0, StallVblN = 0;   // dkr lab: --stall9-vbl N: burn N cycles at the IRQ vector when a VBlank IRQ is taken (IRQ time, like a VBlank hook)
     // dkr lab: --thr9 INFO: SDK thread accounting. The current thread is the word at INFO+4 (OSThreadInfo.current);

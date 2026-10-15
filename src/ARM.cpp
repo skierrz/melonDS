@@ -666,6 +666,18 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (DscNull && ProfHaltEntry && profaddr == ProfHaltEntry && (CPSR & 0x1F) != 0x12)
+            {
+                // audioid lab: an inert module: halt here and return to the caller on the wake, as OS_Halt does
+                JumpTo(R[14]);
+                Halt(1);
+                if (NDS.ARM9Timestamp < NDS.ARM9Target)
+                {
+                    if (ProfOn) ProfHalted(NDS.ARM9Target - NDS.ARM9Timestamp);
+                    NDS.ARM9Timestamp = NDS.ARM9Target;
+                }
+                break;
+            }
             if (DscIdeal && ProfOn && ProfInModule(profaddr) && (CPSR & 0x1F) != 0x12 && NDS.HaltInterrupted(0))
             {
                 // audioid lab: take the IRQ now, as a halted ARM9 would at this timestamp

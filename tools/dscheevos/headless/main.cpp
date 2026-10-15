@@ -654,6 +654,8 @@ static void usage()
         "                       the literal word, which the stock hook's \"ldr pc,[pc,#-4]\" does through the game's D-cache)\n"
         "  --dsc-ideal-lat N    (audioid lab) with --dsc-ideal: N ARM9 cycles of wake latency at such an IRQ (a stock\n"
         "                       OS_Halt's MCR leaves 1 + 2 cycles pending until the wake)\n"
+        "  --dsc-null           (audioid lab) the module never runs: at its halt entry the ARM9 halts and then returns to the\n"
+        "                       caller, as NitroSDK's OS_Halt does (what the hook alone costs)\n"
         "  --dsc-nonet          (audioid lab) ignore --net: nothing answers behind the emulated Wi-Fi, so a run's timing never\n"
         "                       depends on the host (a loaded state's connections are gone anyway)\n"
         "  --verbose            show emulator info/debug logs\n");
@@ -673,7 +675,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
-    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false;   // audioid lab
+    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     unsigned long long stallvbl = 0, stallstep = 64;   // dkr lab: --stall9-vbl, --stall9-step
@@ -779,6 +781,7 @@ int main(int argc, char** argv)
         else if (a == "--dsc-a7free") dsca7free = true;
         else if (a == "--dsc-hookb") dschookb = true;
         else if (a == "--dsc-nonet") dscnonet = true;
+        else if (a == "--dsc-null") dscnull = true;
         else if (a == "--dsc-ideal-lat") dscideallat = std::stoi(next());
         else if (a == "--stall9")
         {
@@ -1085,7 +1088,7 @@ int main(int argc, char** argv)
         f = f0 + 1; scriptbase = sb; frames += f; prof::forcestart = true;
         std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
     }
-    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat;
+    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat; nds->ARM9.DscNull = dscnull;
     if (!loadstate.empty()) dsc_status("at start");
     if (!loadstate.empty() && prof::ram32(prof::base + 0x14))
     {
