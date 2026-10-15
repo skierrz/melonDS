@@ -123,6 +123,7 @@ static bool threads(int c, u32 info, u32& cur, std::vector<Thr>& out)
             bool ok = true;
             for (u32 t : ts)
             {
+                if (c == 9 && t == idle9) continue;   // the idle thread's saved SP may be our module's stack
                 u32 a = rd(c, t + o), b = rd(c, t + o + 4), lo = std::min(a, b), hi = std::max(a, b), sp = rd(c, t + 0x38);
                 if (hi - lo < 0x40 || hi - lo > 0x200000 || !ramc(c, lo) || sp < lo || sp > hi) { ok = false; break; }
             }
@@ -157,7 +158,7 @@ static void exclusions(std::vector<Ex>& ex, u32& flags)
     for (int c : { 9, 7 })
     {
         ARM& cpu = c == 9 ? (ARM&)nds->ARM9 : (ARM&)nds->ARM7;
-        const int base = c == 9 ? 0 : R_STK7 - R_STK9;
+        const int rSTK = c == 9 ? R_STK9 : R_STK7, rCTX = c == 9 ? R_CTX9 : R_CTX7, rIRQ = c == 9 ? R_IRQ9 : R_IRQ7, rSVC = c == 9 ? R_SVC9 : R_SVC7;
         std::vector<Thr> ts; u32 cur = 0;
         bool have = threads(c, c == 9 ? info9 : info7, cur, ts);
         if (!have) { flags |= c == 9 ? 4 : 8; }
@@ -177,16 +178,16 @@ static void exclusions(std::vector<Ex>& ex, u32& flags)
                 continue;
             }
             u32 sp = t.t == cur ? sp_usr(cpu) : t.sp;
-            if (t.t == cur) ex.push_back({ base + R_CTX9, c, t.t, t.t + ctxsize });
-            if (sp >= t.lo && sp <= t.hi) ex.push_back({ base + R_STK9, c, t.lo, sp });
+            if (t.t == cur) ex.push_back({ rCTX, c, t.t, t.t + ctxsize });
+            if (sp >= t.lo && sp <= t.hi) ex.push_back({ rSTK, c, t.lo, sp });
             else flags |= 16;
         }
         // IRQ stack: from the next stack below it (the highest thread stack top under SP_irq, within 8 KB) up to SP_irq
         u32 irqlo = 0;
         for (auto& t : ts) if (t.hi <= spirq && spirq - t.hi <= 0x2000) irqlo = std::max(irqlo, t.hi);
-        if (irqlo) ex.push_back({ base + R_IRQ9, c, irqlo, spirq }); else flags |= 32;
+        if (irqlo) ex.push_back({ rIRQ, c, irqlo, spirq }); else flags |= 32;
         // SVC stack: from the IRQ stack's top up to SP_svc
-        if (irqtop && irqtop <= spsvc && spsvc - irqtop <= 0x400) ex.push_back({ base + R_SVC9, c, irqtop, spsvc }); else flags |= 64;
+        if (irqtop && irqtop <= spsvc && spsvc - irqtop <= 0x400) ex.push_back({ rSVC, c, irqtop, spsvc }); else flags |= 64;
     }
 }
 
