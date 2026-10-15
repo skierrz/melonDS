@@ -666,6 +666,12 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (Irq9On && profaddr == 0xFFFF0018 && (CPSR & 0x1F) == 0x12 && Irq9Last != NDS.ARM9Timestamp)
+            {
+                Irq9Last = NDS.ARM9Timestamp;
+                const u32 m = NDS.IF[0] & NDS.IE[0];
+                for (int b = 0; b < 32; b++) if (m & (1u << b)) Irq9[b]++;
+            }
             if (StallVbl && profaddr == 0xFFFF0018 && (NDS.IF[0] & NDS.IE[0] & 1) && StallVblUsed < StallVbl)
             {
                 // a VBlank IRQ was just taken: the ARM9 spends StallVbl cycles in IRQ mode (IRQs are off), once per frame

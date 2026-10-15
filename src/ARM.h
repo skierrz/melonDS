@@ -470,6 +470,7 @@ public:
     std::vector<u32> StallZero;
     std::vector<std::pair<u32, u32>> StallEq;   // dkr lab: --stall9-eq A:B, only while word A == word B
     bool StallOK();
+    bool Irq9On = false; u64 Irq9[32] {}; u64 Irq9Last = ~0ull;   // --irq9-csv: IRQ vector entries per interval by IF&IE bit
     u64 StallStep = 64;   // --stall9-step N: cycles per burn step (IRQs are taken between steps)
     u64 StallVbl = 0, StallVblUsed = 0, StallVblN = 0;   // dkr lab: --stall9-vbl N: burn N cycles at the IRQ vector when a VBlank IRQ is taken (IRQ time, like a VBlank hook)
     // dkr lab: --thr9 INFO: SDK thread accounting. The current thread is the word at INFO+4 (OSThreadInfo.current);

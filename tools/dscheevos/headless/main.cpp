@@ -107,7 +107,8 @@ std::vector<ARMv5::Range9> ranges9;
 std::vector<ARMv5::Pass9> passes9;    // gsdd lab: --pass9 ENTRY:RET:WORK,...
 std::vector<std::pair<u32, u64>> counts9;   // gsdd lab: --count9 PC
 std::vector<ARMv5::Sp9> sps9;               // gsdd lab: --sp9 LO:HI
-FILE* thr9csv = nullptr;            // dkr lab: --thr9-csv FILE (per interval, per thread)
+FILE* thr9csv = nullptr;
+FILE* irq9csv = nullptr;             // dkr lab: --irq9-csv FILE            // dkr lab: --thr9-csv FILE (per interval, per thread)
 bool forcestart = false;             // gsdd lab: --load-state: the profile starts at the first interval   // --range9 LO:HI[:SLO:SHI] (columns in the profile log)
 u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
 s64 giextra = 0, gdextra = 0;
@@ -297,6 +298,13 @@ static void on_vblank(ARMv5& cpu)
                              (unsigned long long)s.Cyc, (unsigned long long)s.Ins, (unsigned long long)s.IrqIns);
         std::fprintf(thr9csv, "%ld,irq,0,0,%llu,0,0\n", hl::frame, (unsigned long long)cpu.Thr9IrqCyc);
     }
+    if (irq9csv && startframe >= 0 && !done)
+    {
+        std::fprintf(irq9csv, "%ld", hl::frame);
+        for (int b = 0; b < 24; b++) std::fprintf(irq9csv, ",%llu", (unsigned long long)cpu.Irq9[b]);
+        std::fprintf(irq9csv, "\n");
+    }
+    for (auto& v : cpu.Irq9) v = 0;
     for (auto& [t, s] : cpu.Thr9Stats) s = {};
     cpu.Thr9IrqCyc = cpu.Thr9Sw = cpu.Thr9SwIrq = 0;
     cpu.ProfFrame = (u32)hl::frame;
@@ -617,6 +625,7 @@ static void usage()
         "  --hash9 FILE         (gsdd lab) per frame: screens, SPU output, main RAM (4 MB) hashes; --hash9-skip LO:SIZE\n"
         "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta)\n"
         "  --thr9 INFO          (dkr lab, hex) SDK thread accounting: current thread = [INFO+4]; prof log thr_sw, thr_sw_irq\n"
+        "  --irq9-csv FILE      (dkr lab) per interval: ARM9 IRQ entries by IF&IE bit\n"
         "  --thr9-log FILE      (dkr lab) one line per thread switch: from/to thread, id, prio, state, last pc/lr\n"
         "  --thr9-csv FILE      (dkr lab) per interval and thread: non-IRQ cycles, switches in (from IRQ mode)\n"
         "  --callers9 PC        (dkr lab, hex, repeatable) executions of PC by lr and thread, summary at exit\n"
@@ -751,6 +760,7 @@ int main(int argc, char** argv)
         else if (a == "--thr9") thr9info = std::stoul(next(), nullptr, 16);
         else if (a == "--thr9-csv") thr9path = next();
         else if (a == "--thr9-log") thr9logpath = next();
+        else if (a == "--irq9-csv") { prof::irq9csv = std::fopen(next().c_str(), "w"); if (prof::irq9csv) std::fprintf(prof::irq9csv, "frame,vblank,hblank,vcount,t0,t1,t2,t3,sio,dma0,dma1,dma2,dma3,keypad,slot2,b14,b15,ipcsync,fifo_send,fifo_recv,card_done,card_ire,geom,b22,b23\n"); }
         else if (a == "--callers9") call9pcs.push_back(std::stoul(next(), nullptr, 16));
         else if (a == "--ev9") ev9path = next();
         else if (a == "--ev9-pc") ev9pcs.push_back(std::stoul(next(), nullptr, 16));
@@ -1010,6 +1020,7 @@ int main(int argc, char** argv)
     }
 
     long f = 0, scriptbase = -1;
+    nds->ARM9.Irq9On = prof::irq9csv != nullptr;
     nds->ARM9.Thr9Info = thr9info; nds->ARM9.Call9PCs = call9pcs; nds->ARM9.Ev9PCs = ev9pcs; nds->ARM9.Ev9Hash = ev9hash; nds->ARM9.Ev9Words = ev9words; nds->ARM9.Ev9HashP = ev9hashp;
     if (!thr9path.empty()) prof::thr9csv = std::fopen(thr9path.c_str(), "w");
     if (prof::thr9csv) std::fprintf(prof::thr9csv, "frame,thread,id,prio,cyc,switch_in,switch_in_irq\n");
@@ -1191,6 +1202,7 @@ int main(int argc, char** argv)
     if (hashf) std::fclose(hashf);
     if (audiof) std::fclose(audiof);
     if (prof::thr9csv) std::fclose(prof::thr9csv);
+    if (prof::irq9csv) std::fclose(prof::irq9csv);
     if (nds->ARM9.Thr9Log) std::fclose(nds->ARM9.Thr9Log);
     if (nds->ARM9.Ev9Log) std::fclose(nds->ARM9.Ev9Log);
     if (nds->Spu7Log) std::fclose(nds->Spu7Log);
