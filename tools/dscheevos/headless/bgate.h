@@ -38,7 +38,7 @@ u32 idle9 = 0;              // ARM9 idle thread: current thread at the first OS_
 u32 irqtop9 = 0, irqtop7 = 0;   // IRQ stack tops (SP_irq seen outside IRQ mode)
 int next9 = -1, next7 = -1, stk9 = -1, stk7 = -1;   // OSThread offsets found: next pointer, stack bounds pair
 long vblanks = 0;
-bool armedQ = false;
+int armedQ = 0;             // 2: VBlank started, waiting for the game to acknowledge it (IF bit 0 cleared); 1: waiting for the idle thread
 long qkey = -1;
 long curframe = 0;
 u32 modlo = 0x02D80000, modhi = 0x02F80000;
@@ -210,7 +210,7 @@ static void setup_regions()
     add_region("vram", 0x06800000, sizeof g.VRAM_A * 4 + sizeof g.VRAM_E + sizeof g.VRAM_F + sizeof g.VRAM_G + sizeof g.VRAM_H + sizeof g.VRAM_I, 0x1000);
     add_region("pal", 0x05000000, 0x800, 0x800);
     add_region("oam", 0x07000000, 0x800, 0x800);
-    add_region("io", 0x04000000, 0x100, 0x100);
+    add_region("io", 0x04000000, 0x80, 4);   // one block per register word (see fill)
     add_region("other", 0x02000000, ms, 0x10000);   // main RAM outside the game's areas and the module: nds-bootstrap
     bufs.resize(regions.size());
 }
@@ -248,7 +248,7 @@ static void fill(size_t r, std::vector<u8>& b)
         w[k++] = g.GPU2D_A.DispCnt; w[k++] = g.GPU2D_B.DispCnt;
         for (int i = 0; i < 8; i++) w[k++] = nds->Timers[i].Cnt | (u32)nds->Timers[i].Reload << 16;
         for (int i = 0; i < 4; i++) { w[k++] = nds->ARM9Read32(0x040000B8 + 12 * i); w[k++] = nds->ARM7Read32(0x040000B8 + 12 * i); }
-        cp(0, (const u8*)w, sizeof w);
+        cp(0, (const u8*)w, sizeof w);   // words: IME9 IE9 IME7 IE7 POWCNT WRAMCNT VRAMCNT*3 DISPCNT_A DISPCNT_B TM9_0-3 TM7_0-3 DMA9_0/DMA7_0 ... DMA9_3/DMA7_3
     }
     else if (R.name == "other")
     {
@@ -298,6 +298,15 @@ static void snapshot(int kind, long key)
     std::vector<Ex> ex; u32 flags = 0;
     exclusions(ex, flags);
     if (!idle9) flags |= 128;
+    static int shown[2] = { 0, 0 };
+    if (meta && shown[kind] < 3)
+    {
+        shown[kind]++;
+        std::fprintf(meta, "record %c %ld frame %ld vcount %u flags %x cpsr9 %08x sp_usr9 %08x sp_irq9 %08x sp_svc9 %08x sp_irq7 %08x sp_svc7 %08x:", kind ? 'Q' : 'A', key, curframe,
+                     nds->GPU.VCount, flags, nds->ARM9.CPSR, sp_usr(nds->ARM9), sp_mode(nds->ARM9, 0x12), sp_mode(nds->ARM9, 0x13), sp_mode(nds->ARM7, 0x12), sp_mode(nds->ARM7, 0x13));
+        for (auto& e : ex) { auto [r, off] = locate(e.cpu, e.lo); std::fprintf(meta, " %s:%08x-%08x@%s", rulenames[e.rule], e.lo, e.hi, r < 0 ? "-" : regions[r].name.c_str()); }
+        std::fprintf(meta, "\n");
+    }
     u64 rh[NRULES], rr[NRULES]; u32 rb[NRULES];
     for (int i = 0; i < NRULES; i++) { rh[i] = rr[i] = 1469598103934665603ull; rb[i] = 0; }
     auto hook = nds->BgIoHook; nds->BgIoHook = nullptr;
@@ -370,9 +379,10 @@ static void insn_hook(ARMv5& cpu, u32 addr, u32 cpsr)
         idle9 = rd9(info9 + 4);
         if (meta) { std::fprintf(meta, "idle9 %08x (first OS_Halt call at frame %ld)\n", idle9, curframe); std::fflush(meta); }
     }
-    if (armedQ && idle9 && !irq && rd9(info9 + 4) == idle9 && (rd9(info9) >> 16) == 0)
+    if (armedQ == 2 && !(nds->IF[0] & 1)) armedQ = 1;
+    if (armedQ == 1 && idle9 && !irq && rd9(info9 + 4) == idle9 && (rd9(info9) >> 16) == 0)
     {
-        armedQ = false;
+        armedQ = 0;
         snapshot(1, qkey);
     }
     cpu.BgArmed = armedQ || !idle9;
@@ -382,7 +392,7 @@ static void on_vblank(ARMv5& cpu)
 {
     if (!snap) return;
     vblanks++;
-    qkey = vblanks; armedQ = true;
+    qkey = vblanks; armedQ = 2;
     cpu.BgArmed = true;
 }
 
