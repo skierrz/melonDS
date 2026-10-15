@@ -666,6 +666,32 @@ void ARMv5::Execute()
 #endif
         {
             const u32 profaddr = R[15] - ((CPSR & 0x20) ? 2 : 4), profcpsr = CPSR;
+            if (StallPC && profaddr == StallPC && (CPSR & 0x1F) != 0x12)
+            {
+                if (!StallBusy && StallUsed + StallUnit <= StallPerFrame)
+                {
+                    bool ok = true;
+                    for (u32 a : StallZero) if (*(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]) { ok = false; break; }
+                    if (ok) { StallBusy = true; StallLeft = StallUnit; StallUnits++; StallSinceCheck = 0; }
+                }
+                if (StallBusy && StallCheck && StallSinceCheck >= StallCheck)
+                {
+                    StallSinceCheck = 0;
+                    for (u32 a : StallZero) if (*(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]) { StallBusy = false; StallLeft = 0; StallAborts++; break; }
+                }
+                if (StallBusy)
+                {
+                    const u64 ch = std::min<u64>(StallLeft, 64);
+                    StallSinceCheck += ch;
+                    StallLeft -= ch; StallUsed += ch; StallTotal += ch;
+                    if (!StallLeft) StallBusy = false;
+                    NDS.ARM9Timestamp += ch;
+                    if (IRQ) TriggerIRQ();
+                    continue;
+                }
+            }
+            else if (StallBusy && StallPC && (CPSR & 0x1F) != 0x12 && profaddr != StallPC)
+                ;   // preempted mid-unit (another thread runs): the unit resumes when this thread is back at PC
             if (ProfOn) { ProfCurPC = profaddr; ProfCurMod = ProfInModule(profaddr); }
             if (CPSR & 0x20) // THUMB
             {
@@ -805,6 +831,41 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
     Prof.Busy += c;
     if (Halted == 1) ProfHaltBios = addr >= 0xFFFF0000;
     if (Hist9) (*Hist9)[addr][irq ? 1 : 0] += c;
+    if (!irq)
+    {
+        for (auto& [pc, n] : Counts9) if (pc == addr) n++;
+        for (auto& sp : Sps9) if (R[13] - sp.Lo < sp.Hi - sp.Lo) sp.Cyc += c;
+        for (auto& p : Passes9)
+        {
+            const bool near = R[13] - p.SP + 0x400u < 0x800u;   // same thread: SP within 1 KB of the entry SP
+            if (p.StretchOn)
+            {
+                if (near) p.StretchRun += c;
+                else { p.MaxStretch = std::max(p.MaxStretch, p.StretchDone); p.StretchOn = false; }
+            }
+            if (!p.In && addr == p.Entry) { p.In = true; p.Worked = false; p.SP = R[13]; p.CurCyc = 0; }
+            if (!p.In || !near) continue;
+            p.CurCyc += c;
+            if (!p.Worked) for (u32 w : p.Work) if (w == addr) { p.Worked = true; break; }
+            if (addr == p.Ret)
+            {
+                p.In = false; p.Calls++;
+                if (p.Worked)
+                {
+                    p.CycWork += p.CurCyc;
+                    if (p.StretchOn) { p.MaxStretch = std::max(p.MaxStretch, p.StretchDone); p.StretchOn = false; }
+                }
+                else
+                {
+                    p.Empty++; p.CycEmpty += p.CurCyc;
+                    if (p.FirstV == 0xFFFF) p.FirstV = NDS.GPU.VCount;
+                    p.LastV = NDS.GPU.VCount;
+                    if (!p.StretchOn) { p.StretchOn = true; p.StretchRun = p.CurCyc; }
+                    p.StretchDone = p.StretchRun;
+                }
+            }
+        }
+    }
     if (!irq)
         for (auto& r : Ranges9)
         {
@@ -1523,3 +1584,28 @@ void ARMv4::BusWrite32(u32 addr, u32 val)
 }
 }
 
+
+namespace melonDS
+{
+void ARMv5::Acc9Hit(u32 addr, int size, bool write, u32 val)
+{
+    for (size_t i = 0; i < Acc9Ranges.size(); i++)
+    {
+        auto [lo, n] = Acc9Ranges[i];
+        if (addr - lo >= n) continue;
+        const u32 pc = R[15] - ((CPSR & 0x20) ? 4 : 8);
+        auto& v = Acc9[{ pc, (u8)i, (u8)write, (u8)((CPSR & 0x1F) == 0x12) }];
+        if (!v.N) { v.Lo = v.Hi = addr; v.FirstF = ProfFrame; }
+        v.N++; v.Lo = std::min(v.Lo, addr); v.Hi = std::max(v.Hi, addr); v.LastF = ProfFrame;
+        if (write && (addr >> 24) == 0x02)
+        {
+            u32 old = 0, o = addr & NDS.MainRAMMask;
+            if (size == 1) old = NDS.MainRAM[o], val &= 0xFF;
+            else if (size == 2) { o &= ~1u; old = *(u16*)&NDS.MainRAM[o]; val &= 0xFFFF; }
+            else { o &= ~3u; old = *(u32*)&NDS.MainRAM[o]; }
+            if (old != val) v.Changed++;
+            v.LastVal = val;
+        }
+    }
+}
+}

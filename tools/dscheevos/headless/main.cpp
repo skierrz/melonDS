@@ -36,6 +36,7 @@
 #include "Platform.h"
 #include "Net.h"
 #include "Net_Slirp.h"
+#include "Savestate.h"
 
 using namespace melonDS;
 namespace fs = std::filesystem;
@@ -102,7 +103,11 @@ std::vector<u64> arm7blocks;
 std::string hist9path;      // busyloop lab: --hist9 FILE (ARM9 cycles by PC), from interval hist9skip on
 long hist9skip = 0;
 std::map<u32, std::array<u64, 2>> hist9;
-std::vector<ARMv5::Range9> ranges9;   // --range9 LO:HI[:SLO:SHI] (columns in the profile log)
+std::vector<ARMv5::Range9> ranges9;
+std::vector<ARMv5::Pass9> passes9;    // gsdd lab: --pass9 ENTRY:RET:WORK,...
+std::vector<std::pair<u32, u64>> counts9;   // gsdd lab: --count9 PC
+std::vector<ARMv5::Sp9> sps9;               // gsdd lab: --sp9 LO:HI
+bool forcestart = false;             // gsdd lab: --load-state: the profile starts at the first interval   // --range9 LO:HI[:SLO:SHI] (columns in the profile log)
 u64 game = 0, gameirq = 0, gameinstr = 0, gimiss = 0, gdmiss = 0, gdwmiss = 0, gwb = 0;
 s64 giextra = 0, gdextra = 0;
 u64 polli = 0, polld = 0, pollwb = 0, revi = 0, revd = 0, a7busy = 0, a7range = 0, a7rangemax = 0;
@@ -173,6 +178,7 @@ static void write_pcs(const std::string& path, const std::vector<ARMv5::ProfPCSt
 static void on_vblank(ARMv5& cpu)
 {
     auto& p = cpu.Prof;
+    if (startframe < 0 && forcestart) { p.Halts = std::max(p.Halts, 1u); }
     if (startframe < 0)
     {
         before += p.VBlank + p.Idle;
@@ -254,6 +260,16 @@ static void on_vblank(ARMv5& cpu)
             for (auto& r : cpu.Ranges9)
                 std::fprintf(log, ",%llu,%llu,%d,%d", (unsigned long long)r.Cyc, (unsigned long long)r.Entries,
                              r.First == 0xFFFF ? -1 : (int)r.First, r.Last == 0xFFFF ? -1 : (int)r.Last);
+        if (log)
+            for (auto& q : cpu.Passes9)
+                std::fprintf(log, ",%llu,%llu,%llu,%llu,%llu,%d,%d", (unsigned long long)q.Calls, (unsigned long long)q.Empty,
+                             (unsigned long long)q.CycEmpty, (unsigned long long)q.CycWork,
+                             (unsigned long long)std::max(q.MaxStretch, q.StretchOn ? q.StretchDone : 0),
+                             q.FirstV == 0xFFFF ? -1 : (int)q.FirstV, q.LastV == 0xFFFF ? -1 : (int)q.LastV);
+        if (log)
+            for (auto& [pc, k] : cpu.Counts9) std::fprintf(log, ",%llu", (unsigned long long)k);
+        if (log) std::fprintf(log, ",%llu", (unsigned long long)cpu.StallUsed);
+        if (log) for (auto& sp : cpu.Sps9) std::fprintf(log, ",%llu", (unsigned long long)sp.Cyc);
         if (log) std::fprintf(log, "\n");
         if (stopafter >= 0 && (long)n >= stopafter)
         {
@@ -276,6 +292,9 @@ static void on_vblank(ARMv5& cpu)
     p.Halts = halts;
     nds->ARM7.Prof7Busy = nds->ARM7.Prof7Range = 0;
     for (auto& r : cpu.Ranges9) { r.Cyc = r.Entries = 0; r.First = r.Last = 0xFFFF; }
+    for (auto& q : cpu.Passes9) { q.Calls = q.Empty = q.CycEmpty = q.CycWork = q.MaxStretch = 0; q.FirstV = q.LastV = 0xFFFF; if (q.StretchOn) { q.StretchRun -= q.StretchDone; q.StretchDone = 0; } }
+    for (auto& [pc, k] : cpu.Counts9) k = 0;
+    for (auto& sp : cpu.Sps9) sp.Cyc = 0;
     find_module(cpu);
 }
 
@@ -573,6 +592,14 @@ static void usage()
         "  --range9 LO:HI[:SLO:SHI]  with --profile (busyloop lab, repeatable, hex): per interval, non-IRQ cycles\n"
         "                       with the PC in [LO,HI) or, once there, in [SLO,SHI) until it leaves both; entries;\n"
         "                       VCOUNT at the first entry and the last exit (profile log columns)\n"
+        "  --pass9 ENTRY:RET:WORK,...  (gsdd lab, hex, with --profile) per interval: calls of the function at\n"
+        "                       ENTRY (back at RET on the same thread), empty ones (no WORK pc ran), cycles, longest empty stretch\n"
+        "  --count9 PC          (gsdd lab, hex, with --profile) per interval: non-IRQ executions of PC\n"
+        "  --access9 LO:SIZE    (gsdd lab, hex) ARM9 data reads/writes in the range by pc, summary at exit\n"
+        "  --stall9 PC:UNIT:PERFRAME (gsdd lab) emulate a preemptible gate at PC: burn UNIT ARM9 cycles per arrival,\n"
+        "                       at most PERFRAME per frame; --stall9-zero ADDR (hex, repeatable): only while that word is 0\n"
+        "  --hash9 FILE         (gsdd lab) per frame: screens, SPU output, main RAM (4 MB) hashes; --hash9-skip LO:SIZE\n"
+        "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta)\n"
         "  --shot-prefix P      (busyloop lab) script SHOT lines write P.f<FRAME>.ppm instead of next to --screenshot\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
@@ -588,6 +615,11 @@ int main(int argc, char** argv)
     bool profile = false, scriptfromgame = false, thumbcycle = false;
     u32 whatifi = 0, whatifd = 0;
     std::string proflog, watch;
+    std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
+    std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
+    std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
+    u32 stallpc = 0; unsigned long long stallunit = 0, stallpf = 0, stallcheck = 0; std::vector<u32> stallzero;   // gsdd lab: --stall9
+    std::string hashpath, audiopath; std::vector<std::pair<u32, u32>> hashskip;                               // gsdd lab: --hash9
     long frames = 600; u32 keys = 0; bool direct = true; bool cachemodel = false; bool net = false;
     std::string rtc = "host";
     std::vector<std::string> guestargs;
@@ -658,6 +690,41 @@ int main(int argc, char** argv)
             if (k != 2 && k != 4) usage();
             prof::ranges9.push_back({ lo, hi, slo, shi, false, 0, 0, 0xFFFF, 0xFFFF });
         }
+        else if (a == "--pass9")
+        {
+            std::string v = next(); unsigned lo = 0, ret = 0; int used = 0;
+            if (std::sscanf(v.c_str(), "%x:%x%n", &lo, &ret, &used) != 2) usage();
+            ARMv5::Pass9 q{}; q.Entry = lo; q.Ret = ret;
+            const char* w = v.c_str() + used;
+            while (*w == ':' || *w == ',') { unsigned x; int u = 0; if (std::sscanf(w + 1, "%x%n", &x, &u) != 1) break; q.Work.push_back(x); w += 1 + u; }
+            prof::passes9.push_back(q);
+        }
+        else if (a == "--sp9") { std::string v = next(); unsigned lo = 0, hi = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &hi) != 2) usage(); prof::sps9.push_back({ lo, hi, 0 }); }
+        else if (a == "--count9") prof::counts9.push_back({ (u32)std::stoul(next(), nullptr, 16), 0 });
+        else if (a == "--access9")
+        {
+            std::string v = next(); unsigned lo = 0, n = 0;
+            if (std::sscanf(v.c_str(), "%x:%x", &lo, &n) != 2) usage();
+            acc9.push_back({ lo, n });
+        }
+        else if (a == "--save-state-at")
+        {
+            std::string v = next(); size_t c = v.find(':');
+            if (c == std::string::npos) usage();
+            saveat.push_back({std::stol(v.substr(0, c)), v.substr(c + 1)});
+        }
+        else if (a == "--load-state") loadstate = next();
+        else if (a == "--stall9")
+        {
+            std::string v = next(); unsigned pc = 0; unsigned long long u = 0, pf = 0;
+            if (std::sscanf(v.c_str(), "%x:%llu:%llu", &pc, &u, &pf) != 3) usage();
+            stallpc = pc; stallunit = u; stallpf = pf;
+        }
+        else if (a == "--stall9-check") stallcheck = std::stoull(next());
+        else if (a == "--stall9-zero") stallzero.push_back(std::stoul(next(), nullptr, 16));
+        else if (a == "--hash9") hashpath = next();
+        else if (a == "--audio-out") audiopath = next();
+        else if (a == "--hash9-skip") { std::string v = next(); unsigned lo = 0, n = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &n) != 2) usage(); hashskip.push_back({lo, n}); }
         else if (a == "--thumb-cycle") thumbcycle = true;
         else if (a == "--trace-sd") sdtracefrom = std::stol(next());
         else if (a == "--sd-cmd-busy") melonDS::SDCmdBusyCycles = std::stol(next());
@@ -807,6 +874,10 @@ int main(int argc, char** argv)
         nds->ARM9.ProfOn = true;
         nds->ARM9.ProfVBlank = prof::on_vblank;
         nds->ARM9.Ranges9 = prof::ranges9;
+        for (auto& q : prof::passes9) { q.FirstV = q.LastV = 0xFFFF; }
+        nds->ARM9.Passes9 = prof::passes9;
+        nds->ARM9.Counts9 = prof::counts9;
+        nds->ARM9.Sps9 = prof::sps9;
         if (!proflog.empty())
         {
             prof::log = std::fopen(proflog.c_str(), "w");
@@ -817,6 +888,12 @@ int main(int argc, char** argv)
                          "masked,masked_pend,masked_pend_max");
             for (size_t k = 0; k < prof::ranges9.size(); k++)
                 std::fprintf(prof::log, ",r%zu_cyc,r%zu_entries,r%zu_first_line,r%zu_last_line", k, k, k, k);
+            for (size_t k = 0; k < prof::passes9.size(); k++)
+                std::fprintf(prof::log, ",p%zu_calls,p%zu_empty,p%zu_cyc_empty,p%zu_cyc_work,p%zu_max_stretch,p%zu_first_line,p%zu_last_line",
+                             k, k, k, k, k, k, k);
+            for (auto& [pc, k] : prof::counts9) std::fprintf(prof::log, ",c%x", pc);
+            std::fprintf(prof::log, ",stall_cyc");
+            for (auto& sp : prof::sps9) std::fprintf(prof::log, ",sp%x_cyc", sp.Lo);
             std::fprintf(prof::log, "\n");
         }
     }
@@ -891,7 +968,34 @@ int main(int argc, char** argv)
         std::fprintf(tio, "\n");
     }
 
-    long f = 0;
+    long f = 0, scriptbase = -1;
+    nds->ARM9.StallPC = stallpc; nds->ARM9.StallUnit = stallunit; nds->ARM9.StallPerFrame = stallpf; nds->ARM9.StallZero = stallzero; nds->ARM9.StallCheck = stallcheck;
+    FILE* hashf = hashpath.empty() ? nullptr : std::fopen(hashpath.c_str(), "w");
+    FILE* audiof = audiopath.empty() ? nullptr : std::fopen(audiopath.c_str(), "wb");
+    std::vector<s16> abuf(1 << 16);
+    std::vector<u8> ramcopy;
+    if (!acc9.empty())
+    {
+        u32 lo = 0xFFFFFFFF, hi = 0;
+        for (auto [a, n] : acc9) { lo = std::min(lo, a); hi = std::max(hi, a + n); }
+        nds->ARM9.Acc9Ranges = acc9; nds->ARM9.Acc9Lo = lo; nds->ARM9.Acc9Span = hi - lo;
+    }
+    if (!loadstate.empty())
+    {
+        FILE* sf = std::fopen(loadstate.c_str(), "rb");
+        FILE* mf = std::fopen((loadstate + ".meta").c_str(), "r");
+        long f0 = -1, sb = -1;
+        if (!sf || !mf || std::fscanf(mf, "%ld %ld", &f0, &sb) != 2) { std::fprintf(stderr, "cannot read state %s(.meta)\n", loadstate.c_str()); return 2; }
+        std::fclose(mf);
+        std::fseek(sf, 0, SEEK_END); long len = std::ftell(sf); std::fseek(sf, 0, SEEK_SET);
+        std::vector<u8> buf(len);
+        if (std::fread(buf.data(), 1, len, sf) != (size_t)len) { std::fprintf(stderr, "short state %s\n", loadstate.c_str()); return 2; }
+        std::fclose(sf);
+        Savestate st(buf.data(), (u32)len, false);
+        if (!nds->DoSavestate(&st) || st.Error) { std::fprintf(stderr, "state load failed %s\n", loadstate.c_str()); return 2; }
+        f = f0 + 1; scriptbase = sb; frames += f; prof::forcestart = true;
+        std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
+    }
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
         for (auto& p : pokes)
@@ -910,7 +1014,7 @@ int main(int argc, char** argv)
         u32 held = keys;
         int touchx = -1, touchy = -1;
         // script time: frames since boot, or since the game's first OS_Halt call
-        long st = !scriptfromgame ? f : prof::startframe >= 0 ? f - prof::startframe : -1;
+        long st = !scriptfromgame ? f : scriptbase >= 0 ? f - scriptbase : prof::startframe >= 0 ? f - prof::startframe : -1;
         for (auto& p : script)
         {
             if (st < 0) break;
@@ -970,7 +1074,27 @@ int main(int argc, char** argv)
                 for (int c = 4; c < 8; c++) { d->NDMAs[c].TraceState(b, sizeof b); std::fprintf(stderr, "[sd]   NDMA7.%d %s\n", c - 4, b); }
             }
         }
+        nds->ARM9.StallUsed = 0;
         nds->RunFrame();
+        if (hashf)
+        {
+            // per frame: both screens, the audio the SPU produced, main RAM (first 4 MB, skips zeroed) as
+            // one hash and as 64 KB block hashes (blocks every 60th frame)
+            auto fnv = [](u64 h, const void* p, size_t n) { const u8* b = (const u8*)p; for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ull; } return h; };
+            auto mix64 = [](u64 h, const u64* p, size_t n) { for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 0x100000001b3ull; h ^= h >> 29; } return h; };
+            void* top; void* bot; u64 fh = 1469598103934665603ull;
+            if (nds->GPU.GetFramebuffers(&top, &bot)) { fh = fnv(fh, top, 256 * 192 * 4); fh = fnv(fh, bot, 256 * 192 * 4); }
+            u64 ah = 1469598103934665603ull; long ns = 0;
+            for (;;) { int k = nds->SPU.ReadOutput(abuf.data(), 4096); if (k <= 0) break; ah = fnv(ah, abuf.data(), (size_t)k * 4); ns += k; if (audiof) std::fwrite(abuf.data(), 4, k, audiof); }
+            ramcopy.assign(nds->MainRAM, nds->MainRAM + 0x400000);
+            for (auto [lo, n] : hashskip) { u32 o = lo & 0x3FFFFF; if (o + n <= 0x400000) std::memset(&ramcopy[o], 0, n); }
+            u64 rh = 1469598103934665603ull; std::vector<u64> blk(64);
+            for (int b = 0; b < 64; b++) { blk[b] = mix64(1469598103934665603ull, (const u64*)&ramcopy[b * 0x10000], 0x10000 / 8); rh = mix64(rh, &blk[b], 1); }
+            std::fprintf(hashf, "%ld,%016llx,%016llx,%ld,%016llx,%llu,%llu", f, (unsigned long long)fh, (unsigned long long)ah, ns, (unsigned long long)rh,
+                         (unsigned long long)nds->ARM9.StallUsed, (unsigned long long)nds->ARM9.StallUnits);
+            if (f % 60 == 0) for (int b = 0; b < 64; b++) std::fprintf(hashf, ",%016llx", (unsigned long long)blk[b]);
+            std::fprintf(hashf, "\n");
+        }
         if (tio)
         {
             auto& b = nds->GPU.GPU2D_B;
@@ -987,6 +1111,24 @@ int main(int argc, char** argv)
             }
             std::fprintf(tio, "\n");
         }
+        for (auto& [sf, sp] : saveat)
+        {
+            if (sf != f) continue;
+            Savestate st;
+            nds->DoSavestate(&st);
+            FILE* o = st.Error ? nullptr : std::fopen(sp.c_str(), "wb");
+            FILE* m = o ? std::fopen((sp + ".meta").c_str(), "w") : nullptr;
+            if (o && m)
+            {
+                std::fwrite(st.Buffer(), 1, st.Length(), o);
+                std::fprintf(m, "%ld %ld\n", f, scriptbase >= 0 ? scriptbase : prof::startframe);
+                std::fprintf(stderr, "[runner] state saved %s at frame %ld (script %ld)\n", sp.c_str(), f,
+                             f - (scriptbase >= 0 ? scriptbase : prof::startframe));
+            }
+            else std::fprintf(stderr, "[runner] state save failed %s\n", sp.c_str());
+            if (o) std::fclose(o);
+            if (m) std::fclose(m);
+        }
         for (auto& [df, dp] : dumpsat)
         {
             if (df != f) continue;
@@ -999,6 +1141,10 @@ int main(int argc, char** argv)
     }
 
     if (tio) std::fclose(tio);
+    if (hashf) std::fclose(hashf);
+    if (audiof) std::fclose(audiof);
+    if (stallpc) std::fprintf(stderr, "[runner] stall pc %08x unit %llu per interval %llu check %llu: %llu units, %llu cycles in all, %llu aborted\n", stallpc, stallunit, stallpf, stallcheck,
+                              (unsigned long long)nds->ARM9.StallUnits, (unsigned long long)nds->ARM9.StallTotal, (unsigned long long)nds->ARM9.StallAborts);
     if (!hl::linebuf.empty()) hl_log(Platform::LogLevel::Debug, "\n");
     if (!shot.empty()) write_ppm(*nds, shot);
     if (nwifi && !wpapmk.empty())
@@ -1019,6 +1165,12 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[cache] I hit %llu miss %llu | D read hit %llu miss %llu | D write hit %llu miss %llu | writebacks %llu\n",
             (unsigned long long)c.IHit, (unsigned long long)c.IMiss, (unsigned long long)c.DReadHit, (unsigned long long)c.DReadMiss,
             (unsigned long long)c.DWriteHit, (unsigned long long)c.DWriteMiss, (unsigned long long)c.DWriteBack);
+    }
+    if (!nds->ARM9.Acc9.empty())
+    {
+        for (auto& [k, v] : nds->ARM9.Acc9)
+            std::fprintf(stderr, "[runner] acc9 range %u pc=%08x %s%s: %llu (value changed %llu, last %08x) at %08x-%08x, frames %u-%u\n", k.Range, k.PC,
+                         k.Write ? "write" : "read", k.IRQ ? " IRQ" : "", (unsigned long long)v.N, (unsigned long long)v.Changed, v.LastVal, v.Lo, v.Hi, v.FirstF, v.LastF);
     }
     if (nds->WatchHook)
     {

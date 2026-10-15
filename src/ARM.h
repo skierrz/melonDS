@@ -23,6 +23,7 @@
 #include <optional>
 #include <map>
 #include <array>
+#include <tuple>
 #include <vector>
 #include <unordered_map>
 
@@ -437,6 +438,35 @@ public:
     std::map<u32, std::array<u64, 2>>* Hist9 = nullptr;
     struct Range9 { u32 Lo, Hi, SubLo, SubHi; bool In; u64 Cyc, Entries; u32 First, Last; };
     std::vector<Range9> Ranges9;
+    // gsdd lab: --pass9 ENTRY:RET:WORK,... classifies each call of a function (entered at ENTRY, back at
+    // RET on the same thread, judged by SP) as work (a WORK pc ran inside it) or empty; per interval:
+    // calls, empty calls, non-IRQ cycles in empty / work calls, the longest stretch of back-to-back empty
+    // calls on that thread (cycles, broken by a work call or another thread), VCOUNT of the first / last
+    // empty call's end. --count9 PC: per interval, non-IRQ executions of PC.
+    struct Pass9 { u32 Entry, Ret; std::vector<u32> Work; bool In, Worked, StretchOn; u32 SP; u64 CurCyc;
+                   u64 Calls, Empty, CycEmpty, CycWork, StretchRun, StretchDone, MaxStretch; u32 FirstV, LastV; };
+    std::vector<Pass9> Passes9;
+    std::vector<std::pair<u32, u64>> Counts9;
+    // gsdd lab: --sp9 LO:HI: per interval, non-IRQ cycles with SP in [LO, HI) (one thread's stack)
+    struct Sp9 { u32 Lo, Hi; u64 Cyc; };
+    std::vector<Sp9> Sps9;
+    // gsdd lab: --access9 LO:SIZE (repeatable): ARM9 data reads / writes into the ranges by pc (key: pc,
+    // range, write, IRQ mode); for main-RAM writes also how many changed the stored value.
+    struct Acc9Key { u32 PC; u8 Range, Write, IRQ; bool operator<(const Acc9Key& o) const
+        { return std::tie(PC, Range, Write, IRQ) < std::tie(o.PC, o.Range, o.Write, o.IRQ); } };
+    struct Acc9Val { u64 N, Changed; u32 Lo, Hi; u32 FirstF, LastF, LastVal; };
+    std::vector<std::pair<u32, u32>> Acc9Ranges;
+    u32 Acc9Lo = 0, Acc9Span = 0;
+    std::map<Acc9Key, Acc9Val> Acc9;
+    void Acc9Hit(u32 addr, int size, bool write, u32 val);
+    // gsdd lab: --stall9 PC:UNIT:PERFRAME: emulate a preemptible gate at PC (non-IRQ mode): each arrival at
+    // PC, while the interval's budget lasts and every --stall9-zero word reads 0, the ARM9 burns UNIT cycles
+    // there in 64-cycle steps (IRQs are taken between steps, so threads switch as they would) before it
+    // runs the instruction. It executes nothing and writes nothing: only time passes.
+    u32 StallPC = 0; u64 StallUnit = 0, StallPerFrame = 0, StallLeft = 0, StallUsed = 0, StallUnits = 0, StallTotal = 0;
+    bool StallBusy = false;
+    u64 StallCheck = 0, StallSinceCheck = 0, StallAborts = 0;   // --stall9-check N: re-test the zero words every N cycles; abort the unit if one is set
+    std::vector<u32> StallZero;
     void ShadowReset();
     bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
     // Optional: the idle work by role (--profile-idle-roles). ProfRoleOf maps a

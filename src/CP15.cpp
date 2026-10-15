@@ -1123,6 +1123,7 @@ void ARMv5::DataRead8(u32 addr, u32* val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 1, false, 0);
     DataRegion = addr;
 
     if (addr < ITCMSize)
@@ -1150,6 +1151,7 @@ void ARMv5::DataRead16(u32 addr, u32* val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 2, false, 0);
     DataRegion = addr;
 
     addr &= ~1;
@@ -1179,6 +1181,7 @@ void ARMv5::DataRead32(u32 addr, u32* val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 4, false, 0);
     DataRegion = addr;
 
     addr &= ~3;
@@ -1202,6 +1205,7 @@ void ARMv5::DataRead32(u32 addr, u32* val)
 
 void ARMv5::DataRead32S(u32 addr, u32* val)
 {
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 4, false, 0);
     addr &= ~3;
 
     if (addr < ITCMSize)
@@ -1229,6 +1233,7 @@ void ARMv5::DataWrite8(u32 addr, u8 val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 1, true, (u32)val);
     DataRegion = addr;
 
     if (addr < ITCMSize)
@@ -1257,6 +1262,7 @@ void ARMv5::DataWrite16(u32 addr, u16 val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 2, true, (u32)val);
     DataRegion = addr;
 
     addr &= ~1;
@@ -1287,6 +1293,7 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
         return;
     }
 
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 4, true, (u32)val);
     DataRegion = addr;
 
     addr &= ~3;
@@ -1311,6 +1318,7 @@ void ARMv5::DataWrite32(u32 addr, u32 val)
 
 void ARMv5::DataWrite32S(u32 addr, u32 val)
 {
+    if (Acc9Span && addr - Acc9Lo < Acc9Span) Acc9Hit(addr, 4, true, (u32)val);
     addr &= ~3;
 
     if (addr < ITCMSize)
