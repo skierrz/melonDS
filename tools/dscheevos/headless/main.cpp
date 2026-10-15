@@ -650,6 +650,8 @@ static void usage()
         "                       VBlank work off (ce7 valueBits bit 28): nds-bootstrap without DScheevos from that point\n"
         "  --dsc-a7free         (audioid lab) the ARM7's DScheevos VBlank work off; the runner bumps the module's VBlank count\n"
         "                       (header +0x24) after each frame instead, costing no emulated time\n"
+        "  --dsc-hookb          (audioid lab) after --load-state: the OS_Halt hook becomes \"b halt_entry\" (no data read of\n"
+        "                       the literal word, which the stock hook's \"ldr pc,[pc,#-4]\" does through the game's D-cache)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -667,7 +669,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
-    int dsccache = 0, dscideal = 0; bool dscneutral = false, dsca7free = false;   // audioid lab
+    int dsccache = 0, dscideal = 0; bool dscneutral = false, dsca7free = false, dschookb = false;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     unsigned long long stallvbl = 0, stallstep = 64;   // dkr lab: --stall9-vbl, --stall9-step
@@ -771,6 +773,7 @@ int main(int argc, char** argv)
         else if (a == "--dsc-ideal") dscideal = std::stoi(next());
         else if (a == "--dsc-neutral") dscneutral = true;
         else if (a == "--dsc-a7free") dsca7free = true;
+        else if (a == "--dsc-hookb") dschookb = true;
         else if (a == "--stall9")
         {
             std::string v = next(); unsigned pc = 0; unsigned long long u = 0, pf = 0;
@@ -1085,6 +1088,19 @@ int main(int argc, char** argv)
         for (u32 a = 0x02000000; a < 0x02400000; a += 4)
             if (prof::ram32(a) == 0xE51FF004 && prof::ram32(a + 4) == halt && prof::ram32(a + 8) == 0xE12FFF1E)
                 hashskip.push_back({a, 8});
+    }
+    if (dschookb && !dscneutral)
+    {
+        u32 halt = prof::ram32(prof::base + 0x14); int n = 0;
+        for (u32 a = 0x02000000; a < 0x02400000; a += 4)
+            if (prof::ram32(a) == 0xE51FF004 && prof::ram32(a + 4) == halt && prof::ram32(a + 8) == 0xE12FFF1E)
+            {
+                s32 off = ((s32)halt - (s32)(a + 8)) >> 2;
+                u32 w0 = 0xEA000000u | ((u32)off & 0xFFFFFF);
+                std::memcpy(&nds->MainRAM[a & nds->MainRAMMask], &w0, 4); n++;
+                std::fprintf(stderr, "[runner] dsc: OS_Halt hook at %08x is now b %08x (%08x)\n", a, halt, w0);
+            }
+        if (!n) std::fprintf(stderr, "[runner] dsc: WARNING: no OS_Halt hook found for --dsc-hookb\n");
     }
     if (dscneutral || dsca7free)
     {
