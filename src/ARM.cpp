@@ -733,6 +733,7 @@ void ARMv5::Execute()
             else if (StallBusy && StallPC && (CPSR & 0x1F) != 0x12 && profaddr != StallPC)
                 ;   // preempted mid-unit (another thread runs): the unit resumes when this thread is back at PC
             if (ProfOn) { ProfCurPC = profaddr; ProfCurMod = ProfInModule(profaddr); }
+            if (BgArmed && BgHook) BgHook(*this, profaddr, CPSR);
             if (CPSR & 0x20) // THUMB
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)

@@ -61,6 +61,8 @@ int hl_net_recv(melonDS::u8* data) { return g_net ? g_net->RecvPacket(data, 0) :
 
 void hl_signal_stop() { hl::stopped = true; }
 
+#include "bgate.h"
+
 // --profile: per VBlank interval, ARM9 cycles inside the DScheevos module
 // (its VBlank call and its idle work) and whether the game reached idle (see
 // ARMv5::ProfileInstr). Counting starts at the first VBlank after the game's
@@ -179,6 +181,7 @@ static void write_pcs(const std::string& path, const std::vector<ARMv5::ProfPCSt
 
 static void on_vblank(ARMv5& cpu)
 {
+    bg::on_vblank(cpu);
     auto& p = cpu.Prof;
     if (startframe < 0 && forcestart) { p.Halts = std::max(p.Halts, 1u); }
     if (startframe < 0)
@@ -658,6 +661,10 @@ static void usage()
         "                       caller, as NitroSDK's OS_Halt does (what the hook alone costs)\n"
         "  --dsc-nonet          (audioid lab) ignore --net: nothing answers behind the emulated Wi-Fi, so a run's timing never\n"
         "                       depends on the host (a loaded state's connections are gone anyway)\n"
+        "  --bgate PREFIX       (behaviour gate, with --profile and --load-state) per frame and per VBlank interval at the game's\n"
+        "                       quiescent instant: block hashes of the game-visible memories with dead stacks/contexts and the hook masked,\n"
+        "                       screens, lag flag, keypad reads, timing-sensitive register reads and IPC writes (PREFIX.snap/.frames.csv/.io.csv/.meta)\n"
+        "  --bgate-dump KIND:KEY:FILE  write the masked memories of record KIND (A or Q) KEY to FILE (for address-level diffs)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
 }
@@ -675,6 +682,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
+    std::string bgpath;   // behaviour gate
     int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
@@ -782,6 +790,10 @@ int main(int argc, char** argv)
         else if (a == "--dsc-hookb") dschookb = true;
         else if (a == "--dsc-nonet") dscnonet = true;
         else if (a == "--dsc-null") dscnull = true;
+        else if (a == "--bgate") bgpath = next();
+        else if (a == "--bgate-dump") { std::string v = next(); char k = 0; long key = 0; int used = 0;
+            if (std::sscanf(v.c_str(), "%c:%ld:%n", &k, &key, &used) != 2 || (k != 'A' && k != 'Q')) usage();
+            bg::dumps.push_back({ k == 'Q' ? 1 : 0, key, v.substr(used) }); }
         else if (a == "--dsc-ideal-lat") dscideallat = std::stoi(next());
         else if (a == "--stall9")
         {
@@ -1097,7 +1109,10 @@ int main(int argc, char** argv)
         u32 halt = prof::ram32(prof::base + 0x14);
         for (u32 a = 0x02000000; a < 0x02400000; a += 4)
             if (prof::ram32(a) == 0xE51FF004 && prof::ram32(a + 4) == halt && prof::ram32(a + 8) == 0xE12FFF1E)
+            {
                 hashskip.push_back({a, 8});
+                if (!bg::haltaddr) bg::haltaddr = a;
+            }
     }
     if (dschookb && !dscneutral)
     {
@@ -1136,6 +1151,14 @@ int main(int argc, char** argv)
                 }
             if (!n) std::fprintf(stderr, "[runner] dsc: WARNING: no patched OS_Halt found (halt entry %08x)\n", halt);
         }
+    }
+    if (!bgpath.empty())
+    {
+        if (!profile || loadstate.empty()) { std::fprintf(stderr, "--bgate needs --profile and --load-state\n"); return 2; }
+        bg::nds = nds.get(); bg::modlo = prof::base; bg::modhi = prof::base + 0x200000;
+        if (!bg::open(bgpath)) { std::fprintf(stderr, "cannot write %s.*\n", bgpath.c_str()); return 2; }
+        if (!bg::haltaddr) std::fprintf(stderr, "[runner] bgate: WARNING: no OS_Halt hook found (idle thread unknown)\n");
+        nds->BgIoHook = bg::io_hook; nds->ARM9.BgHook = bg::insn_hook; nds->ARM9.BgArmed = true;
     }
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
     {
@@ -1216,7 +1239,9 @@ int main(int argc, char** argv)
             }
         }
         nds->ARM9.StallUsed = 0; nds->ARM9.StallVblUsed = 0;
+        if (!bgpath.empty()) bg::frame_begin(f);
         nds->RunFrame();
+        if (!bgpath.empty()) bg::frame_end(f);
         if (dsca7free)
         {
             u32 o = (prof::base + 0x24) & nds->MainRAMMask; u32 v; std::memcpy(&v, &nds->MainRAM[o], 4); v++; std::memcpy(&nds->MainRAM[o], &v, 4);
@@ -1287,6 +1312,7 @@ int main(int argc, char** argv)
                         nds->ARM9.R[13], nds->ARM9.CPSR);
     }
 
+    if (!bgpath.empty()) { nds->BgIoHook = nullptr; nds->ARM9.BgHook = nullptr; nds->ARM9.BgArmed = false; bg::close(); }
     if (tio) std::fclose(tio);
     if (hashf) std::fclose(hashf);
     if (audiof) std::fclose(audiof);

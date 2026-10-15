@@ -1544,7 +1544,7 @@ u8 DSi::ARM9Read8(u32 addr)
         return NDS::ARM9Read8(addr);
 
     case 0x04000000:
-        return ARM9IORead8(addr);
+        { u8 v = ARM9IORead8(addr); if (BgIoHook) BgIoHook(*this, 0, addr, v, 1, false); return v; }
 
     case 0x08000000:
     case 0x09000000:
@@ -1595,7 +1595,7 @@ u16 DSi::ARM9Read16(u32 addr)
         return NDS::ARM9Read16(addr);
 
     case 0x04000000:
-        return ARM9IORead16(addr);
+        { u16 v = ARM9IORead16(addr); if (BgIoHook) BgIoHook(*this, 0, addr, v, 2, false); return v; }
 
     case 0x08000000:
     case 0x09000000:
@@ -1651,7 +1651,7 @@ u32 DSi::ARM9Read32(u32 addr)
         return NDS::ARM9Read32(addr);
 
     case 0x04000000:
-        return ARM9IORead32(addr);
+        { u32 v = ARM9IORead32(addr); if (BgIoHook) BgIoHook(*this, 0, addr, v, 4, false); return v; }
 
     case 0x08000000:
     case 0x09000000:
@@ -1732,6 +1732,7 @@ void DSi::ARM9Write8(u32 addr, u8 val)
         return NDS::ARM9Write8(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 0, addr, val, 1, true);
         ARM9IOWrite8(addr, val);
         return;
 
@@ -1830,6 +1831,7 @@ void DSi::ARM9Write16(u32 addr, u16 val)
         return NDS::ARM9Write16(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 0, addr, val, 2, true);
         ARM9IOWrite16(addr, val);
         return;
 
@@ -1916,6 +1918,7 @@ void DSi::ARM9Write32(u32 addr, u32 val)
         return NDS::ARM9Write32(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 0, addr, val, 4, true);
         ARM9IOWrite32(addr, val);
         return;
 
@@ -2011,7 +2014,7 @@ u8 DSi::ARM7Read8(u32 addr)
         return NDS::ARM7Read8(addr);
 
     case 0x04000000:
-        return ARM7IORead8(addr);
+        { u8 v = ARM7IORead8(addr); if (BgIoHook) BgIoHook(*this, 1, addr, v, 1, false); return v; }
 
     case 0x08000000:
     case 0x08800000:
@@ -2071,7 +2074,7 @@ u16 DSi::ARM7Read16(u32 addr)
         return NDS::ARM7Read16(addr);
 
     case 0x04000000:
-        return ARM7IORead16(addr);
+        { u16 v = ARM7IORead16(addr); if (BgIoHook) BgIoHook(*this, 1, addr, v, 2, false); return v; }
 
     case 0x08000000:
     case 0x08800000:
@@ -2130,7 +2133,7 @@ u32 DSi::ARM7Read32(u32 addr)
         return NDS::ARM7Read32(addr);
 
     case 0x04000000:
-        return ARM7IORead32(addr);
+        { u32 v = ARM7IORead32(addr); if (BgIoHook) BgIoHook(*this, 1, addr, v, 4, false); return v; }
 
     case 0x08000000:
     case 0x08800000:
@@ -2216,6 +2219,7 @@ void DSi::ARM7Write8(u32 addr, u8 val)
         return NDS::ARM7Write8(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 1, addr, val, 1, true);
         ARM7IOWrite8(addr, val);
         return;
 
@@ -2307,6 +2311,7 @@ void DSi::ARM7Write16(u32 addr, u16 val)
         return NDS::ARM7Write16(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 1, addr, val, 2, true);
         ARM7IOWrite16(addr, val);
         return;
 
@@ -2398,6 +2403,7 @@ void DSi::ARM7Write32(u32 addr, u32 val)
         return NDS::ARM7Write32(addr, val);
 
     case 0x04000000:
+        if (BgIoHook) BgIoHook(*this, 1, addr, val, 4, true);
         ARM7IOWrite32(addr, val);
         return;
 

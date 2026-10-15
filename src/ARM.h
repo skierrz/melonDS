@@ -400,6 +400,9 @@ public:
     bool ProfInIdle = false;               // last instruction outside IRQ mode was module idle code
     u32 ProfPrevInstr = 0;
     void (*ProfVBlank)(ARMv5& cpu) = nullptr;  // called at the start of each VBlank
+    // behaviour gate (runner --bgate): while BgArmed, BgHook is called before each ARM9 instruction (address, CPSR)
+    bool BgArmed = false;
+    void (*BgHook)(ARMv5& cpu, u32 addr, u32 cpsr) = nullptr;
     void ProfileInstr(u32 addr, u32 cpsr);
     // Optional, with the cache model: the VBlank call's instructions by PC
     // (cycles, runs, I-cache misses, D-cache read/write misses) and its data

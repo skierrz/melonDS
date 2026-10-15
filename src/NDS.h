@@ -277,6 +277,9 @@ public: // TODO: Encapsulate the rest of these members
     // WatchHook): called for every ARM9/ARM7 bus write in [WatchLo, WatchLo + WatchSize).
     u32 WatchLo = 0, WatchSize = 0;
     void (*WatchHook)(NDS& nds, int cpu, u32 addr, u32 val, int size) = nullptr;
+    // behaviour gate (runner --bgate): every ARM9 (cpu 0) / ARM7 (cpu 1) IO register read and write on the DSi
+    // bus, with the value; the runner filters by address. Off (nullptr) unless the runner sets it.
+    void (*BgIoHook)(NDS& nds, int cpu, u32 addr, u32 val, int size, bool write) = nullptr;
 
     // no need to worry about those overflowing, they can keep going for atleast 4350 years
     u64 ARM9Timestamp, ARM9Target;
