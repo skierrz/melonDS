@@ -688,7 +688,7 @@ void ARMv5::Execute()
                 }
                 if (StallBusy)
                 {
-                    const u64 ch = std::min<u64>(StallLeft, 64);
+                    const u64 ch = std::min<u64>(StallLeft, StallStep);
                     StallSinceCheck += ch;
                     StallLeft -= ch; StallUsed += ch; StallTotal += ch;
                     if (!StallLeft) StallBusy = false;
@@ -1649,6 +1649,14 @@ void ARMv5::Ev9Event(u32 addr, u32 cpsr)
                  R[0], R[1], R[2], R[3], R[14], c1.Pos, c1.FIFOReadOffset, c3.Pos, k0.Pos, k0.FIFOWriteOffset);
     for (auto [lo, n] : Ev9Hash)
     {
+        u64 h = 1469598103934665603ull;
+        for (u32 i = 0; i < n; i++) { h ^= NDS.MainRAM[(lo + i) & NDS.MainRAMMask]; h *= 1099511628211ull; }
+        std::fprintf(Ev9Log, ",%016llx", (unsigned long long)h);
+    }
+    for (u32 a : Ev9Words) std::fprintf(Ev9Log, ",%08x", *(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]);
+    for (auto [pa, off, n] : Ev9HashP)
+    {
+        const u32 lo = *(u32*)&NDS.MainRAM[pa & NDS.MainRAMMask & ~3u] + off;
         u64 h = 1469598103934665603ull;
         for (u32 i = 0; i < n; i++) { h ^= NDS.MainRAM[(lo + i) & NDS.MainRAMMask]; h *= 1099511628211ull; }
         std::fprintf(Ev9Log, ",%016llx", (unsigned long long)h);

@@ -470,6 +470,7 @@ public:
     std::vector<u32> StallZero;
     std::vector<std::pair<u32, u32>> StallEq;   // dkr lab: --stall9-eq A:B, only while word A == word B
     bool StallOK();
+    u64 StallStep = 64;   // --stall9-step N: cycles per burn step (IRQs are taken between steps)
     u64 StallVbl = 0, StallVblUsed = 0, StallVblN = 0;   // dkr lab: --stall9-vbl N: burn N cycles at the IRQ vector when a VBlank IRQ is taken (IRQ time, like a VBlank hook)
     // dkr lab: --thr9 INFO: SDK thread accounting. The current thread is the word at INFO+4 (OSThreadInfo.current);
     // a change of it is a thread switch (counted as an IRQ switch when it happens in IRQ mode). Non-IRQ cycles are
@@ -485,6 +486,7 @@ public:
     // (any mode): frame, ARM9 and ARM7 timestamps, pc, thread, r0-r3, lr, SPU channel 1/3 and capture 0 positions,
     // hashes of the main-RAM ranges
     FILE* Ev9Log = nullptr; std::vector<u32> Ev9PCs; std::vector<std::pair<u32, u32>> Ev9Hash;
+    std::vector<u32> Ev9Words; std::vector<std::tuple<u32, u32, u32>> Ev9HashP;   // --ev9-word ADDR, --ev9-hashp PTR:OFF:LEN
     void Ev9Event(u32 addr, u32 cpsr);
     void ShadowReset();
     bool ProfInModule(u32 addr) const { return addr >= ProfLo && addr < ProfHi; }
