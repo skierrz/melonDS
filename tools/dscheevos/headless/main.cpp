@@ -398,9 +398,9 @@ static void report(NDS& nds)
 // audioid lab: the module's status counters (dscm_status_t: active, hardcore, frames snapshotted, evaluated, dropped, missed)
 static void dsc_status(const char* when)
 {
-    if (prof::ram32(prof::base) != 0x56435344 && prof::ram32(prof::base + 0x3C) != 0x56435344) { std::fprintf(stderr, "[dsc] status %s: no module\n", when); return; }
+    if (prof::ram32(prof::base) != 0x56435344 && prof::ram32(prof::base + 0x3C) != 0x56435344) { std::fprintf(stderr, "[runner] dsc: status %s: no module\n", when); return; }
     u32 st = prof::ram32(prof::base + 0x1C);
-    std::fprintf(stderr, "[dsc] status %s: active %u snapshotted %u evaluated %u dropped %u missed %u\n", when,
+    std::fprintf(stderr, "[runner] dsc: status %s: active %u snapshotted %u evaluated %u dropped %u missed %u\n", when,
                  prof::ram32(st), prof::ram32(st + 8), prof::ram32(st + 12), prof::ram32(st + 16), prof::ram32(st + 20));
 }
 
@@ -1085,10 +1085,10 @@ int main(int argc, char** argv)
         {
             if (nds->ARM7Read32(c) != c) continue;
             u32 vb = nds->ARM7Read32(c + 0x4C);
-            std::fprintf(stderr, "[dsc] ce7 at %08x, valueBits %08x -> %08x\n", c, vb, vb & ~(1u << 28));
+            std::fprintf(stderr, "[runner] dsc: ce7 at %08x, valueBits %08x -> %08x\n", c, vb, vb & ~(1u << 28));
             nds->ARM7Write32(c + 0x4C, vb & ~(1u << 28)); ce7n++;
         }
-        if (!ce7n) std::fprintf(stderr, "[dsc] WARNING: no ce7 header found\n");
+        if (!ce7n) std::fprintf(stderr, "[runner] dsc: WARNING: no ce7 header found\n");
         if (dscneutral)
         {
             u32 halt = prof::ram32(prof::base + 0x14); int n = 0;
@@ -1097,9 +1097,9 @@ int main(int argc, char** argv)
                 {
                     u32 o = a & nds->MainRAMMask; u32 w0 = 0xE3A00000, w1 = 0xEE070F90;
                     std::memcpy(&nds->MainRAM[o], &w0, 4); std::memcpy(&nds->MainRAM[o + 4], &w1, 4); n++;
-                    std::fprintf(stderr, "[dsc] OS_Halt at %08x restored to stock\n", a);
+                    std::fprintf(stderr, "[runner] dsc: OS_Halt at %08x restored to stock\n", a);
                 }
-            if (!n) std::fprintf(stderr, "[dsc] WARNING: no patched OS_Halt found (halt entry %08x)\n", halt);
+            if (!n) std::fprintf(stderr, "[runner] dsc: WARNING: no patched OS_Halt found (halt entry %08x)\n", halt);
         }
     }
     for (; f < frames && !hl::hit_until && !hl::stopped && !prof::done; f++)
@@ -1264,7 +1264,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[runner] callers9 pc=%08x lr=%08x thread=%08x: %llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), (unsigned long long)n);
     if (!loadstate.empty()) dsc_status("at end");
     if (dscideal || dsccache)
-        std::fprintf(stderr, "[dsc] ideal %d cache %d: IRQs taken at once in module code %llu (masked %llu); slice ends clamped %llu (%llu cycles dropped)\n",
+        std::fprintf(stderr, "[runner] dsc: ideal %d cache %d: IRQs taken at once in module code %llu (masked %llu); slice ends clamped %llu (%llu cycles dropped)\n",
                      dscideal, dsccache, (unsigned long long)nds->ARM9.DscIrqIdeal, (unsigned long long)nds->ARM9.DscIrqMasked,
                      (unsigned long long)nds->ARM9.DscClampN, (unsigned long long)nds->ARM9.DscClampCyc);
     if (stallvbl) std::fprintf(stderr, "[runner] stall at VBlank IRQ: %llu cycles, %llu frames\n", stallvbl, (unsigned long long)nds->ARM9.StallVblN);
