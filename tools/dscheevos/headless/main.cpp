@@ -623,7 +623,7 @@ static void usage()
         "  --stall9-step N      (dkr lab) --stall9 burns in steps of N cycles (default 64), taking IRQs between steps\n"
         "  --stall9-vbl N       (dkr lab) burn N ARM9 cycles in IRQ mode when a VBlank IRQ is taken, once per frame\n"
         "  --hash9 FILE         (gsdd lab) per frame: screens, SPU output, main RAM (4 MB) hashes; --hash9-skip LO:SIZE\n"
-        "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta)\n"
+        "  --save-state-at FRAME:FILE / --load-state FILE  (gsdd lab) melonDS savestate (+ FILE.meta); FRAME -N: script frame N\n"
         "  --thr9 INFO          (dkr lab, hex) SDK thread accounting: current thread = [INFO+4]; prof log thr_sw, thr_sw_irq\n"
         "  --irq9-csv FILE      (dkr lab) per interval: ARM9 IRQ entries by IF&IE bit\n"
         "  --thr9-log FILE      (dkr lab) one line per thread switch: from/to thread, id, prio, state, last pc/lr\n"
@@ -1213,7 +1213,9 @@ int main(int argc, char** argv)
         }
         for (auto& [sf, sp] : saveat)
         {
-            if (sf != f) continue;
+            // audioid lab: a negative FRAME is -(script frame), i.e. counted from the game's first OS_Halt
+            const long sbase = scriptbase >= 0 ? scriptbase : prof::startframe;
+            if (sf >= 0 ? sf != f : (sbase < 0 || f - sbase != -sf)) continue;
             Savestate st;
             nds->DoSavestate(&st);
             FILE* o = st.Error ? nullptr : std::fopen(sp.c_str(), "wb");
