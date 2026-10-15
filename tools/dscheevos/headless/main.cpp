@@ -1077,6 +1077,15 @@ int main(int argc, char** argv)
     }
     nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal;
     if (!loadstate.empty()) dsc_status("at start");
+    if (!loadstate.empty() && prof::ram32(prof::base + 0x14))
+    {
+        // audioid lab: leave the patched OS_Halt words out of the RAM hash in every run, so that a --dsc-neutral
+        // run (which puts them back to stock) compares with the others on the rest of the game's RAM
+        u32 halt = prof::ram32(prof::base + 0x14);
+        for (u32 a = 0x02000000; a < 0x02400000; a += 4)
+            if (prof::ram32(a) == 0xE51FF004 && prof::ram32(a + 4) == halt && prof::ram32(a + 8) == 0xE12FFF1E)
+                hashskip.push_back({a, 8});
+    }
     if (dscneutral || dsca7free)
     {
         // audioid lab: switch DScheevos off on the ARM7 (and with --dsc-neutral on the ARM9 too), in place
