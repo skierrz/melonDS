@@ -414,9 +414,19 @@ static unsigned long g_watchcount = 0;
 static u32 g_watchskiplo = 0, g_watchskipsize = 0;
 struct WatchWriter { unsigned long n; u32 lo, hi; long first, last; };
 static std::map<std::pair<int, u32>, WatchWriter> g_watchers;
+static FILE* g_watchlog = nullptr;   // --watch-log FILE: every watched write to a file (no stdout lines)
 static void watch_write(NDS& nds, int cpu, u32 addr, u32 val, int size)
 {
     u32 pc = cpu ? nds.ARM7.R[15] : nds.ARM9.R[15];
+    if (g_watchlog)
+    {
+        if (!cpu && pc - g_watchskiplo < g_watchskipsize) return;
+        ARM& c = cpu ? (ARM&)nds.ARM7 : (ARM&)nds.ARM9;
+        std::fprintf(g_watchlog, "%ld,%d,%llu,%08x,%08x,%08x,%d,%x,%x\n", hl::frame, cpu ? 7 : 9,
+                     (unsigned long long)(cpu ? nds.ARM7Timestamp : nds.ARM9Timestamp >> nds.ARM9ClockShift),
+                     pc - ((c.CPSR & 0x20) ? 4 : 8), c.R[14], addr, size * 8, val, c.CPSR & 0x3F);
+        return;
+    }
     if (!cpu && pc - g_watchskiplo < g_watchskipsize)
         return;
     auto& w = g_watchers[{cpu, pc}];
@@ -664,6 +674,8 @@ static void usage()
         "  --bgate PREFIX       (behaviour gate, with --profile and --load-state) per frame and per VBlank interval at the game's\n"
         "                       quiescent instant: block hashes of the game-visible memories with dead stacks/contexts and the hook masked,\n"
         "                       screens, lag flag, keypad reads, timing-sensitive register reads and IPC writes (PREFIX.snap/.frames.csv/.io.csv/.meta)\n"
+        "  --shot-at FRAME:FILE both screens as PPM after FRAME (runner frame; repeatable)\n"
+        "  --watch-log FILE     with --watch-write: every watched write to FILE (frame, cpu, time, pc, lr, addr, bits, value, mode)\n"
         "  --bgate-dump KIND:KEY:FILE  write the masked memories of record KIND (A or Q) KEY to FILE (for address-level diffs)\n"
         "  --verbose            show emulator info/debug logs\n");
     std::exit(2);
@@ -697,6 +709,7 @@ int main(int argc, char** argv)
     struct Poke { long frame; int cpu; u32 addr, val; int bits; };
     std::vector<Poke> pokes;
     std::vector<std::pair<long, std::string>> dumpsat;
+    std::vector<std::pair<long, std::string>> shotsat;   // --shot-at FRAME:FILE
     for (int i = 1; i < argc; i++)
     {
         std::string a = argv[i];
@@ -724,6 +737,7 @@ int main(int argc, char** argv)
         else if (a == "--rtc") rtc = next();
         else if (a == "--net") net = true;
         else if (a == "--watch-write") watch = next();
+        else if (a == "--watch-log") { g_watchlog = std::fopen(next().c_str(), "w"); if (g_watchlog) std::fprintf(g_watchlog, "frame,cpu,ts,pc,lr,addr,bits,value,mode\n"); }
         else if (a == "--watch-skip") { std::string v = next(); size_t c = v.find(':'); g_watchskiplo = std::stoul(v.substr(0, c), nullptr, 0); g_watchskipsize = std::stoul(v.substr(c + 1), nullptr, 0); }
         else if (a == "--profile") profile = true;
         else if (a == "--module-base") prof::base = std::stoul(next(), nullptr, 0);
@@ -830,6 +844,12 @@ int main(int argc, char** argv)
             Poke p{};
             if (std::sscanf(next().c_str(), "%ld:%d:%i:%i:%d", &p.frame, &p.cpu, (int*)&p.addr, (int*)&p.val, &p.bits) != 5) usage();
             pokes.push_back(p);
+        }
+        else if (a == "--shot-at")
+        {
+            std::string v = next(); size_t c = v.find(':');
+            if (c == std::string::npos) usage();
+            shotsat.push_back({std::stol(v.substr(0, c)), v.substr(c + 1)});
         }
         else if (a == "--dump-ram-at")
         {
@@ -1301,6 +1321,8 @@ int main(int argc, char** argv)
             if (o) std::fclose(o);
             if (m) std::fclose(m);
         }
+        for (auto& [sf, sp] : shotsat)
+            if (sf == f) write_ppm(*nds, sp);
         for (auto& [df, dp] : dumpsat)
         {
             if (df != f) continue;
@@ -1313,6 +1335,7 @@ int main(int argc, char** argv)
     }
 
     if (!bgpath.empty()) { nds->BgIoHook = nullptr; nds->ARM9.BgHook = nullptr; nds->ARM9.BgArmed = false; bg::close(); }
+    if (g_watchlog) std::fclose(g_watchlog);
     if (tio) std::fclose(tio);
     if (hashf) std::fclose(hashf);
     if (audiof) std::fclose(audiof);
