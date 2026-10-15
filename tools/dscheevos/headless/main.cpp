@@ -395,6 +395,15 @@ static void report(NDS& nds)
 }
 }
 
+// audioid lab: the module's status counters (dscm_status_t: active, hardcore, frames snapshotted, evaluated, dropped, missed)
+static void dsc_status(const char* when)
+{
+    if (prof::ram32(prof::base + 0x3C) != 0x56435344) { std::fprintf(stderr, "[dsc] status %s: no module\n", when); return; }
+    u32 st = prof::ram32(prof::base + 0x1C);
+    std::fprintf(stderr, "[dsc] status %s: active %u snapshotted %u evaluated %u dropped %u missed %u\n", when,
+                 prof::ram32(st), prof::ram32(st + 8), prof::ram32(st + 12), prof::ram32(st + 16), prof::ram32(st + 20));
+}
+
 // --watch-write: bus writes to a main RAM range (the first 40 printed, all counted).
 // --watch-skip LO:SIZE: leave out ARM9 writes from code in that range (e.g. the
 // module writing its own memory); a summary per writer is printed at the end.
@@ -1067,6 +1076,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
     }
     nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal;
+    if (!loadstate.empty()) dsc_status("at start");
     if (dscneutral || dsca7free)
     {
         // audioid lab: switch DScheevos off on the ARM7 (and with --dsc-neutral on the ARM9 too), in place
@@ -1252,6 +1262,7 @@ int main(int argc, char** argv)
     if (nds->Spu7Log) std::fclose(nds->Spu7Log);
     for (auto& [k, n] : nds->ARM9.Call9)
         std::fprintf(stderr, "[runner] callers9 pc=%08x lr=%08x thread=%08x: %llu\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), (unsigned long long)n);
+    if (!loadstate.empty()) dsc_status("at end");
     if (dscideal || dsccache)
         std::fprintf(stderr, "[dsc] ideal %d cache %d: IRQs taken at once in module code %llu (masked %llu); slice ends clamped %llu (%llu cycles dropped)\n",
                      dscideal, dsccache, (unsigned long long)nds->ARM9.DscIrqIdeal, (unsigned long long)nds->ARM9.DscIrqMasked,
