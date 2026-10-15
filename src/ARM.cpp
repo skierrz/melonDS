@@ -669,11 +669,12 @@ void ARMv5::Execute()
             if (DscIdeal && ProfOn && ProfInModule(profaddr) && (CPSR & 0x1F) != 0x12 && NDS.HaltInterrupted(0))
             {
                 // audioid lab: take the IRQ now, as a halted ARM9 would at this timestamp
-                if (!(CPSR & 0x80)) { DscIrqIdeal++; TriggerIRQ(); continue; }
+                if (!(CPSR & 0x80)) { DscIrqIdeal++; Cycles += DscIdealLat; TriggerIRQ(); continue; }
                 if (DscIdeal >= 2)
                 {
                     const u32 saved = CPSR;
                     CPSR &= ~0x80u;
+                    Cycles += DscIdealLat;
                     TriggerIRQ();
                     R_IRQ[2] = saved;   // the handler returns to the module's masked state
                     DscIrqMasked++;
