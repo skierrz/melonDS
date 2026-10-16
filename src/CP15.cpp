@@ -461,6 +461,7 @@ void ARMv5::CacheModelReset()
     memset(CMDTags, 0, sizeof(CMDTags));
     memset(CMDCount, 0, sizeof(CMDCount));
     CMLastDLine = 0xFFFFFFFF;
+    CMDLockdown = CMILockdown = 0;
     CacheStats = {};
     ShadowReset();
 }
@@ -493,15 +494,21 @@ static inline s32 CacheModelLineCost(NDS& nds, u32 addr)
     return (t[2] + t[3] * 7) << nds.ARM9ClockShift;
 }
 
-static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrobin)
+static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrobin, u32 lockdown)
 {
+    u32 base = lockdown & 3;
+    if (lockdown & 0x80000000) return base;   // load mode: refills go to the base way
+    u32 way;
     if (roundrobin)
     {
-        u32 way = count[set];
+        way = count[set];
         count[set] = (way + 1) & 3;
-        return way;
     }
-    return cpu.RandomLineIndex();
+    else
+        way = cpu.RandomLineIndex();
+    // locked ways (below the base) are never chosen: map the choice into base..3
+    if (way < base) way = base + way % (4 - base);
+    return way;
 }
 
 s32 ARMv5::CacheModelCode(u32 addr)
@@ -510,6 +517,7 @@ s32 ARMv5::CacheModelCode(u32 addr)
     if (!ProfOn) return cost;
     if (ProfInModule(addr)) { if (FpOn) FpTouch(addr & ~0x1Fu); return cost; }
     // a game fetch: the shadow I-cache
+    if (CMILockdown | CMDLockdown) { LockedGameFetch++; if ((CPSR & 0x1F) == 0x12) LockedGameIRQFetch++; }
     bool realmiss = cost != 1;
     if (realmiss) Prof.GameIMiss++;
     u32 line = addr & ~0x1F;
@@ -548,7 +556,7 @@ s32 ARMv5::CacheModelCodeReal(u32 addr)
         }
     }
     CacheStats.IMiss++;
-    tags[CacheModelVictim(*this, CMICount, set, CP15Control & (1<<14))] = line | 1;
+    tags[CacheModelVictim(*this, CMICount, set, CP15Control & (1<<14), (LockModOnly && !(ProfOn && ProfInModule(addr))) ? 0 : CMILockdown)] = line | 1;
     return CacheModelLineCost(NDS, addr);
 }
 
@@ -648,7 +656,7 @@ s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s3
     }
 
     CacheStats.DReadMiss++;
-    u32 way = CacheModelVictim(*this, CMDCount, set, CP15Control & (1<<14));
+    u32 way = CacheModelVictim(*this, CMDCount, set, CP15Control & (1<<14), (LockModOnly && !(ProfOn && ProfCurMod)) ? 0 : CMDLockdown);
     s32 cost = CacheModelLineCost(NDS, addr);
     if ((tags[way] & 3) == 3)
     {
@@ -917,6 +925,13 @@ void ARMv5::CP15Write(u32 id, u32 val)
         return;
 
 
+    case 0x900:
+        CMDLockdown = val & 0x80000003;
+        return;
+    case 0x901:
+        CMILockdown = val & 0x80000003;
+        return;
+
     case 0x910:
         DTCMSetting = val & 0xFFFFF03E;
         UpdateDTCMSetting();
@@ -1043,6 +1058,11 @@ u32 ARMv5::CP15Read(u32 id) const
     case 0x671:
         return PU_Region[(id >> 4) & 0xF];
 
+
+    case 0x900:
+        return CMDLockdown;
+    case 0x901:
+        return CMILockdown;
 
     case 0x910:
         return DTCMSetting;

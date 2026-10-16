@@ -570,6 +570,11 @@ public:
     u32 CMDTags[32*4];
     u8 CMDCount[32];
     u32 CMLastDLine;
+    // ARM946E-S cache lockdown (CP15 c9,c0,0 D / c9,c0,1 I): bits 1:0 lockdown base (ways below it are
+    // never refilled; hits still occur), bit 31 load (refills go to the base way). Footprint lab.
+    u32 CMDLockdown = 0, CMILockdown = 0;
+    u64 LockedGameFetch = 0, LockedGameIRQFetch = 0;
+    bool LockModOnly = false;   // --dsc-lock-modonly (oracle): a lockdown applies to refills by module code only   // game code fetches with a lockdown set (outside the module; part in IRQ mode)
 
     u32 PU_CodeCacheable;
     u32 PU_DataCacheable;
