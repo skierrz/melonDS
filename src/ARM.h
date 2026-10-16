@@ -574,7 +574,13 @@ public:
     // never refilled; hits still occur), bit 31 load (refills go to the base way). Footprint lab.
     u32 CMDLockdown = 0, CMILockdown = 0;
     u64 LockedGameFetch = 0, LockedGameIRQFetch = 0;
-    bool LockModOnly = false;   // --dsc-lock-modonly (oracle): a lockdown applies to refills by module code only   // game code fetches with a lockdown set (outside the module; part in IRQ mode)
+    bool LockModOnly = false;
+    // --dsc-unlock-on-irq (approach A model): every IRQ entry clears the lockdown, as a stub at the
+    // game's IRQ handler entry would; it is put back only when the IRQ returns straight to module code
+    // (our code relocks when it runs again); a game thread switched in first runs unlocked
+    bool UnlockOnIRQ = false;
+    u32 SavedDLock = 0, SavedILock = 0;
+    u64 IRQUnlocks = 0, Relocks = 0, LockDiscards = 0;   // --dsc-lock-modonly (oracle): a lockdown applies to refills by module code only   // game code fetches with a lockdown set (outside the module; part in IRQ mode)
 
     u32 PU_CodeCacheable;
     u32 PU_DataCacheable;

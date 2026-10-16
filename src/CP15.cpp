@@ -513,6 +513,13 @@ static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrob
 
 s32 ARMv5::CacheModelCode(u32 addr)
 {
+    if ((SavedDLock | SavedILock) && (CPSR & 0x1F) != 0x12)
+    {
+        // first fetch outside IRQ mode after the unlock: our code again (relock) or a game thread (stay unlocked)
+        if (ProfOn && ProfInModule(addr)) { CMDLockdown = SavedDLock; CMILockdown = SavedILock; Relocks++; }
+        else LockDiscards++;
+        SavedDLock = SavedILock = 0;
+    }
     s32 cost = CacheModelCodeReal(addr);
     if (!ProfOn) return cost;
     if (ProfInModule(addr)) { if (FpOn) FpTouch(addr & ~0x1Fu); return cost; }

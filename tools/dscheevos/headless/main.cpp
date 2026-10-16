@@ -392,8 +392,11 @@ static void report(NDS& nds)
                      cyc((double)giextra / n), cyc((double)gdextra / n), cyc((double)(giextra + gdextra) / n), pct((double)(giextra + gdextra) / n),
                      (double)polli / n, (double)polld / n, (double)pollwb / n, (double)revi / n, (double)revd / n);
     }
+    if (nds.ARM9.IRQUnlocks)
+        std::fprintf(stderr, "[game] lockdown: IRQ unlocks %llu, relocked on return to module code %llu, game ran first %llu\n",
+                     (unsigned long long)nds.ARM9.IRQUnlocks, (unsigned long long)nds.ARM9.Relocks, (unsigned long long)nds.ARM9.LockDiscards);
     if (nds.ARM9.LockedGameFetch)
-        std::fprintf(stderr, "[lockdown] game code fetches with a cache lockdown set: %.1f/interval (IRQ mode %.1f)\n",
+        std::fprintf(stderr, "[game] lockdown: game code fetches with a cache lockdown set: %.1f/interval (IRQ mode %.1f)\n",
                      (double)nds.ARM9.LockedGameFetch / n, (double)nds.ARM9.LockedGameIRQFetch / n);
     if (arm7)
         std::fprintf(stderr, "[arm7] busy cycles/interval %.0f (%.2f%% of 560190); in %08x-%08x %.0f avg, %llu max\n",
@@ -698,7 +701,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
     std::string bgpath;   // behaviour gate
-    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false, dsclockmod = false;   // audioid lab
+    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false, dsclockmod = false, dscunlockirq = false;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     unsigned long long stallvbl = 0, stallstep = 64;   // dkr lab: --stall9-vbl, --stall9-step
@@ -808,6 +811,7 @@ int main(int argc, char** argv)
         else if (a == "--dsc-nonet") dscnonet = true;
         else if (a == "--dsc-null") dscnull = true;
         else if (a == "--dsc-lock-modonly") dsclockmod = true;   // footprint lab oracle
+        else if (a == "--dsc-unlock-on-irq") dscunlockirq = true;   // footprint lab: approach A
         else if (a == "--bgate") bgpath = next();
         else if (a == "--bgate-dump") { std::string v = next(); char k = 0; long key = 0; int used = 0;
             if (std::sscanf(v.c_str(), "%c:%ld:%n", &k, &key, &used) != 2 || (k != 'A' && k != 'Q')) usage();
@@ -1124,7 +1128,7 @@ int main(int argc, char** argv)
         f = f0 + 1; scriptbase = sb; frames += f; prof::forcestart = true;
         std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
     }
-    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat; nds->ARM9.DscNull = dscnull; nds->ARM9.LockModOnly = dsclockmod;
+    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat; nds->ARM9.DscNull = dscnull; nds->ARM9.LockModOnly = dsclockmod; nds->ARM9.UnlockOnIRQ = dscunlockirq;
     if (!loadstate.empty()) dsc_status("at start");
     if (!loadstate.empty() && prof::ram32(prof::base + 0x14))
     {

@@ -531,6 +531,16 @@ void ARM::TriggerIRQ()
     if (CPSR & 0x80)
         return;
 
+    if (Num == 0)
+    {
+        ARMv5* a9 = (ARMv5*)this;
+        if (a9->UnlockOnIRQ && (a9->CMDLockdown | a9->CMILockdown))
+        {
+            a9->SavedDLock = a9->CMDLockdown; a9->SavedILock = a9->CMILockdown;
+            a9->CMDLockdown = a9->CMILockdown = 0;
+            a9->IRQUnlocks++;
+        }
+    }
     u32 oldcpsr = CPSR;
     CPSR &= ~0xFF;
     CPSR |= 0xD2;
