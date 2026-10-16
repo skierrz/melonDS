@@ -393,7 +393,7 @@ static void report(NDS& nds)
                      (double)polli / n, (double)polld / n, (double)pollwb / n, (double)revi / n, (double)revd / n);
     }
     if (nds.ARM9.IRQUnlocks)
-        std::fprintf(stderr, "[game] lockdown: IRQ unlocks %llu, relocked on return to module code %llu, game ran first %llu\n",
+        std::fprintf(stderr, "[game] lockdown: IRQ unlocks %llu, relocked when our code ran again %llu (unused %llu)\n",
                      (unsigned long long)nds.ARM9.IRQUnlocks, (unsigned long long)nds.ARM9.Relocks, (unsigned long long)nds.ARM9.LockDiscards);
     if (nds.ARM9.LockedGameFetch)
         std::fprintf(stderr, "[game] lockdown: game code fetches with a cache lockdown set: %.1f/interval (IRQ mode %.1f)\n",

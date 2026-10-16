@@ -514,11 +514,14 @@ static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrob
 
 s32 ARMv5::CacheModelCode(u32 addr)
 {
-    if ((SavedDLock | SavedILock) && (CPSR & 0x1F) != 0x12)
+    if ((SavedDLock | SavedILock) && (CPSR & 0x1F) != 0x12 && ProfOn && ProfInModule(addr)
+        && !(addr - ProfHaltEntry < 0xF0))
     {
-        // first fetch outside IRQ mode after the unlock: our code again (relock) or a game thread (stay unlocked)
-        if (ProfOn && ProfInModule(addr)) { CMDLockdown = SavedDLock; CMILockdown = SavedILock; Relocks++; }
-        else LockDiscards++;
+        // our code runs again outside IRQ mode (the IRQ returned to the pass, or the pass resumed after a
+        // thread switch): it relocks, as a relock point in our code would. Not in halt_entry (its stock-halt
+        // path returns to the game's idle loop).
+        if (LockDiscards == 0 && Relocks == 0) {}
+        CMDLockdown = SavedDLock; CMILockdown = SavedILock; Relocks++;
         SavedDLock = SavedILock = 0;
     }
     s32 cost = CacheModelCodeReal(addr);
