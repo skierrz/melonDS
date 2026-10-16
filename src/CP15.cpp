@@ -496,6 +496,7 @@ static inline s32 CacheModelLineCost(NDS& nds, u32 addr)
 
 static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrobin, u32 lockdown)
 {
+    if (cpu.LockIgnore) lockdown = 0;
     u32 base = lockdown & 3;
     if (lockdown & 0x80000000) return base;   // load mode: refills go to the base way
     u32 way;

@@ -579,6 +579,7 @@ public:
     // game's IRQ handler entry would; it is put back only when the IRQ returns straight to module code
     // (our code relocks when it runs again); a game thread switched in first runs unlocked
     bool UnlockOnIRQ = false;
+    bool LockIgnore = false;   // --dsc-lock-ignore: the cache model ignores every lockdown (same-binary control)
     u32 SavedDLock = 0, SavedILock = 0;
     u64 IRQUnlocks = 0, Relocks = 0, LockDiscards = 0;   // --dsc-lock-modonly (oracle): a lockdown applies to refills by module code only   // game code fetches with a lockdown set (outside the module; part in IRQ mode)
 
