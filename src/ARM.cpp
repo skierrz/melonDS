@@ -540,6 +540,17 @@ void ARM::TriggerIRQ()
             a9->CMDLockdown = a9->CMILockdown = 0;
             a9->IRQUnlocks++;
         }
+        if (a9->UnlockOnSwitch && (a9->CMDLockdown | a9->CMILockdown))
+        {
+            const u32 pend = NDS.IE[0] & NDS.IF[0];
+            for (int b = 0; b < 32; b++) if (pend & (1u << b)) a9->IRQLockedTaken[b]++;
+            if (pend & a9->UnlockIRQMask)
+            {
+                a9->SavedDLock = a9->CMDLockdown; a9->SavedILock = a9->CMILockdown;
+                a9->CMDLockdown = a9->CMILockdown = 0;
+                a9->IRQMaskUnlocks++;
+            }
+        }
     }
     u32 oldcpsr = CPSR;
     CPSR &= ~0xFF;

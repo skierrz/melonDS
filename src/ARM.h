@@ -579,6 +579,25 @@ public:
     // game's IRQ handler entry would; it is put back only when the IRQ returns straight to module code
     // (our code relocks when it runs again); a game thread switched in first runs unlocked
     bool UnlockOnIRQ = false;
+    // --dsc-unlock-on-switch (approach A at the thread switch): the lockdown stays through IRQ handlers and is
+    // cleared when NitroSDK's current thread (OSThreadInfo.current, found from the pointer at 0x02FFFFA0 or
+    // 0x027FFFA0) stops being the thread that set it, as a patch in the SDK's thread switch would; our code
+    // relocks when it runs again outside IRQ mode
+    bool UnlockOnSwitch = false;
+    u32 LockThrInfo = 0, LockThread = 0;
+    u64 SwitchUnlocks = 0;
+    u32 UnlockIRQMask = 0;   // --dsc-unlock-irq-mask M: with the switch model, an IRQ entry with (IE & IF & M) also unlocks
+    u64 IRQLockedTaken[32] = {}, IRQMaskUnlocks = 0;   // IRQs taken under a lockdown, by IE & IF bit
+    u32 LockCurThread();
+    inline void LockSwitchCheck()
+    {
+        if (UnlockOnSwitch && (CMDLockdown | CMILockdown) && LockCurThread() != LockThread)
+        {
+            SavedDLock = CMDLockdown; SavedILock = CMILockdown;
+            CMDLockdown = CMILockdown = 0;
+            SwitchUnlocks++;
+        }
+    }
     bool LockIgnore = false;   // --dsc-lock-ignore: the cache model ignores every lockdown (same-binary control)
     u32 SavedDLock = 0, SavedILock = 0;
     u64 IRQUnlocks = 0, Relocks = 0, LockDiscards = 0;   // --dsc-lock-modonly (oracle): a lockdown applies to refills by module code only   // game code fetches with a lockdown set (outside the module; part in IRQ mode)

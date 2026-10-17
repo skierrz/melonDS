@@ -512,8 +512,25 @@ static inline u32 CacheModelVictim(ARMv5& cpu, u8* count, u32 set, bool roundrob
     return way;
 }
 
+u32 ARMv5::LockCurThread()
+{
+    auto rd = [this](u32 a) { return *(u32*)&NDS.MainRAM[a & NDS.MainRAMMask & ~3u]; };
+    if (!LockThrInfo)
+    {
+        for (u32 c : { 0x02FFFFA0u, 0x027FFFA0u })
+        {
+            u32 p = rd(c), cur = rd(p + 4);
+            std::fprintf(stderr, "[lock] OSThreadInfo candidate [%08x] = %08x, current %08x\n", c, p, cur);
+            if (p >= 0x02000000 && p < 0x03000000 && cur >= 0x02000000 && cur < 0x03000000) { LockThrInfo = p; break; }
+        }
+        if (!LockThrInfo) { std::fprintf(stderr, "[lock] no OSThreadInfo: switch model off\n"); UnlockOnSwitch = false; return 0; }
+    }
+    return rd(LockThrInfo + 4);
+}
+
 s32 ARMv5::CacheModelCode(u32 addr)
 {
+    LockSwitchCheck();
     if ((SavedDLock | SavedILock) && (CPSR & 0x1F) != 0x12 && ProfOn && ProfInModule(addr)
         && !(addr - ProfHaltEntry < 0xF0))
     {
@@ -607,6 +624,7 @@ static s32 ShadowData(ARMv5& cpu, NDS& nds, u32 addr, bool write, bool writeback
 
 s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 uncached)
 {
+    LockSwitchCheck();
     if (DscCache && ProfOn && ProfCurMod) return DscCache == 1 ? 1 : uncached;   // audioid lab
     if (!ProfOn || ProfCurMod) return CacheModelDataReal(addr, write, writeback, seq, uncached);
     CacheModelStats before = CacheStats;
@@ -938,9 +956,11 @@ void ARMv5::CP15Write(u32 id, u32 val)
 
     case 0x900:
         CMDLockdown = val & 0x80000003;
+        if (UnlockOnSwitch && CMDLockdown) LockThread = LockCurThread();
         return;
     case 0x901:
         CMILockdown = val & 0x80000003;
+        if (UnlockOnSwitch && CMILockdown) LockThread = LockCurThread();
         return;
 
     case 0x910:

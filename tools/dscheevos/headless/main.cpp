@@ -395,6 +395,15 @@ static void report(NDS& nds)
     if (nds.ARM9.IRQUnlocks)
         std::fprintf(stderr, "[game] lockdown: IRQ unlocks %llu, relocked when our code ran again %llu (unused %llu)\n",
                      (unsigned long long)nds.ARM9.IRQUnlocks, (unsigned long long)nds.ARM9.Relocks, (unsigned long long)nds.ARM9.LockDiscards);
+    if (nds.ARM9.SwitchUnlocks)
+        std::fprintf(stderr, "[game] lockdown: thread-switch unlocks %llu, relocked when our code ran again %llu (OSThreadInfo %08x)\n",
+                     (unsigned long long)nds.ARM9.SwitchUnlocks, (unsigned long long)nds.ARM9.Relocks, nds.ARM9.LockThrInfo);
+    if (nds.ARM9.UnlockOnSwitch)
+    {
+        std::fprintf(stderr, "[game] lockdown: IRQs taken under it per interval by IE&IF bit:");
+        for (int b = 0; b < 32; b++) if (nds.ARM9.IRQLockedTaken[b]) std::fprintf(stderr, " %d:%.1f", b, (double)nds.ARM9.IRQLockedTaken[b] / n);
+        std::fprintf(stderr, "; unlocked by the mask %llu\n", (unsigned long long)nds.ARM9.IRQMaskUnlocks);
+    }
     if (nds.ARM9.LockedGameFetch)
         std::fprintf(stderr, "[game] lockdown: game code fetches with a cache lockdown set: %.1f/interval (IRQ mode %.1f)\n",
                      (double)nds.ARM9.LockedGameFetch / n, (double)nds.ARM9.LockedGameIRQFetch / n);
@@ -701,7 +710,7 @@ int main(int argc, char** argv)
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
     std::string loadstate;                                 // gsdd lab: --load-state FILE (+ FILE.meta)
     std::string bgpath;   // behaviour gate
-    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false, dsclockmod = false, dscunlockirq = false, dsclockignore = false;   // audioid lab
+    int dsccache = 0, dscideal = 0, dscideallat = 0; bool dscneutral = false, dsca7free = false, dschookb = false, dscnonet = false, dscnull = false, dsclockmod = false, dscunlockirq = false, dsclockignore = false, dscunlocksw = false; u32 dscunlockmask = 0;   // audioid lab
     u32 thr9info = 0; std::vector<u32> call9pcs, ev9pcs; std::vector<std::pair<u32, u32>> ev9hash; std::string thr9path, thr9logpath, ev9path, spu7path; std::vector<u32> ev9words; std::vector<std::tuple<u32, u32, u32>> ev9hashp;   // dkr lab
     std::vector<std::pair<u32, u32>> stalleq;   // dkr lab: --stall9-eq
     unsigned long long stallvbl = 0, stallstep = 64;   // dkr lab: --stall9-vbl, --stall9-step
@@ -813,6 +822,8 @@ int main(int argc, char** argv)
         else if (a == "--dsc-lock-modonly") dsclockmod = true;   // footprint lab oracle
         else if (a == "--dsc-unlock-on-irq") dscunlockirq = true;   // footprint lab: approach A
         else if (a == "--dsc-lock-ignore") dsclockignore = true;   // footprint lab: same-binary control
+        else if (a == "--dsc-unlock-on-switch") dscunlocksw = true;
+        else if (a == "--dsc-unlock-irq-mask") dscunlockmask = std::stoul(next(), nullptr, 16);   // footprint lab   // footprint lab: approach A at the thread switch
         else if (a == "--bgate") bgpath = next();
         else if (a == "--bgate-dump") { std::string v = next(); char k = 0; long key = 0; int used = 0;
             if (std::sscanf(v.c_str(), "%c:%ld:%n", &k, &key, &used) != 2 || (k != 'A' && k != 'Q')) usage();
@@ -1129,7 +1140,7 @@ int main(int argc, char** argv)
         f = f0 + 1; scriptbase = sb; frames += f; prof::forcestart = true;
         std::fprintf(stderr, "[runner] state loaded %s: frame %ld, script base %ld\n", loadstate.c_str(), f0, sb);
     }
-    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat; nds->ARM9.DscNull = dscnull; nds->ARM9.LockModOnly = dsclockmod; nds->ARM9.UnlockOnIRQ = dscunlockirq; nds->ARM9.LockIgnore = dsclockignore;
+    nds->ARM9.DscCache = dsccache; nds->ARM9.DscIdeal = dscideal; nds->ARM9.DscIdealLat = dscideallat; nds->ARM9.DscNull = dscnull; nds->ARM9.LockModOnly = dsclockmod; nds->ARM9.UnlockOnIRQ = dscunlockirq; nds->ARM9.LockIgnore = dsclockignore; nds->ARM9.UnlockOnSwitch = dscunlocksw; nds->ARM9.UnlockIRQMask = dscunlockmask;
     if (!loadstate.empty()) dsc_status("at start");
     if (!loadstate.empty() && prof::ram32(prof::base + 0x14))
     {
