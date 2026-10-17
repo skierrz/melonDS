@@ -437,6 +437,7 @@ public:
     // line, wake page); D masking applies only to the module's own memory (main RAM or its 0x0C mirror), never to
     // the game lines our code reads
     std::vector<std::pair<u32, u32>> WhatIfExempt;
+    u32 WhatIfIBase = 0, WhatIfDBase = 0;   // --whatif-module-ibase/-dbase: the confined sets are (set & mask) | base
     bool WhatIfMaskable(u32 addr) const
     {
         if ((addr >> 24) != 0x02 && (addr >> 24) != 0x0C) return false;

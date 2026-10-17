@@ -704,7 +704,7 @@ int main(int argc, char** argv)
     long tracepc = -1, sdtracefrom = -1;
     bool traceled = false;
     bool profile = false, scriptfromgame = false, thumbcycle = false;
-    u32 whatifi = 0, whatifd = 0; std::vector<std::pair<u32, u32>> whatifex;
+    u32 whatifi = 0, whatifd = 0; std::vector<std::pair<u32, u32>> whatifex; u32 whatifib = 0, whatifdb = 0;
     std::string proflog, watch;
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
@@ -775,6 +775,8 @@ int main(int argc, char** argv)
             prof::fplightlo = (u32)std::stoul(v.substr(0, c), nullptr, 16); prof::fplighthi = (u32)std::stoul(v.substr(c + 1), nullptr, 16); }
         else if (a == "--whatif-module-isets") whatifi = std::stoul(next(), nullptr, 0);
         else if (a == "--whatif-module-dsets") whatifd = std::stoul(next(), nullptr, 0);
+        else if (a == "--whatif-module-ibase") whatifib = std::stoul(next(), nullptr, 0);
+        else if (a == "--whatif-module-dbase") whatifdb = std::stoul(next(), nullptr, 0);
         else if (a == "--whatif-exempt") { std::string v = next(); unsigned lo = 0, hi = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &hi) != 2) usage(); whatifex.push_back({lo, hi}); }
         else if (a == "--profile-arm7") { prof::arm7 = true; prof::arm7path = next(); }
         else if (a == "--profile-arm7-range") { std::string v = next(); size_t c = v.find(':'); prof::arm7 = true;
@@ -1001,7 +1003,7 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
-    nds->ARM9.WhatIfISets = whatifi; nds->ARM9.WhatIfDSets = whatifd; nds->ARM9.WhatIfExempt = whatifex;
+    nds->ARM9.WhatIfISets = whatifi; nds->ARM9.WhatIfDSets = whatifd; nds->ARM9.WhatIfExempt = whatifex; nds->ARM9.WhatIfIBase = whatifib; nds->ARM9.WhatIfDBase = whatifdb;
     if (thumbcycle)
         nds->ARM9.ThumbOddCycle = 1;
     if (profile)

@@ -573,7 +573,7 @@ s32 ARMv5::CacheModelCodeReal(u32 addr)
 {
     u32 line = addr & ~0x1F;
     u32 set = (addr >> 5) & 0x3F;
-    if (WhatIfISets && ProfOn && ProfInModule(addr) && WhatIfMaskable(addr)) set &= WhatIfISets; // what-if: module code in fewer sets
+    if (WhatIfISets && ProfOn && ProfInModule(addr) && WhatIfMaskable(addr)) set = (set & WhatIfISets) | WhatIfIBase; // what-if: module code in fewer sets
     u32* tags = &CMITags[set << 2];
     for (int w = 0; w < 4; w++)
     {
@@ -654,7 +654,7 @@ s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s3
     CMLastDLine = line;
 
     u32 set = (addr >> 5) & 0x1F;
-    if (WhatIfDSets && ProfOn && ProfCurMod && WhatIfMaskable(addr)) set &= WhatIfDSets;   // what-if: module data in fewer sets
+    if (WhatIfDSets && ProfOn && ProfCurMod && WhatIfMaskable(addr)) set = (set & WhatIfDSets) | WhatIfDBase;   // what-if: module data in fewer sets
     u32* tags = &CMDTags[set << 2];
     if (FpOn && ProfOn && ProfCurMod && !write) FpTouch(line | 1);
     for (int w = 0; w < 4; w++)
