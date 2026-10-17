@@ -564,6 +564,7 @@ s32 ARMv5::CacheModelCode(u32 addr)
     Prof.GameIExtra += d;
     if ((CPSR & 0x1F) == 0x12) Prof.GameExtraIRQ += d;
     if (realmiss && hit) Prof.PollI++;
+    if (EvictAttr && realmiss && hit) EvictCharge1(EvictI, line, 'I', d);
     if (!realmiss && !hit) Prof.RevI++;
     if (ProfGamePCs && d) { auto& e = (*ProfGamePCs)[line]; e.IExtra += d; if (realmiss && hit) e.PollI++; }
     return cost;
@@ -584,7 +585,9 @@ s32 ARMv5::CacheModelCodeReal(u32 addr)
         }
     }
     CacheStats.IMiss++;
-    tags[CacheModelVictim(*this, CMICount, set, CP15Control & (1<<14), (LockModOnly && !(ProfOn && ProfInModule(addr))) ? 0 : CMILockdown)] = line | 1;
+    const u32 iway = CacheModelVictim(*this, CMICount, set, CP15Control & (1<<14), (LockModOnly && !(ProfOn && ProfInModule(addr))) ? 0 : CMILockdown);
+    if (EvictAttr && ProfOn && ProfInModule(addr)) EvictNote(EvictI, tags[iway], addr);
+    tags[iway] = line | 1;
     return CacheModelLineCost(NDS, addr);
 }
 
@@ -640,6 +643,7 @@ s32 ARMv5::CacheModelData(u32 addr, bool write, bool writeback, bool seq, s32 un
     Prof.GameDExtra += d;
     if ((CPSR & 0x1F) == 0x12) Prof.GameExtraIRQ += d;
     if (realmiss && !smiss) Prof.PollD++;
+    if (EvictAttr && realmiss && !smiss) EvictCharge1(EvictD, addr & ~0x1Fu, 'D', d);
     if (!realmiss && smiss) Prof.RevD++;
     if (realwb && !swb) Prof.PollWB++;
     if (ProfGamePCs && d) { auto& e = (*ProfGamePCs)[ProfCurPC]; e.DExtra += d; if (realmiss && !smiss) e.PollD++; }
@@ -686,6 +690,7 @@ s32 ARMv5::CacheModelDataReal(u32 addr, bool write, bool writeback, bool seq, s3
 
     CacheStats.DReadMiss++;
     u32 way = CacheModelVictim(*this, CMDCount, set, CP15Control & (1<<14), (LockModOnly && !(ProfOn && ProfCurMod)) ? 0 : CMDLockdown);
+    if (EvictAttr && ProfOn && ProfCurMod) EvictNote(EvictD, tags[way], ProfCurPC);
     s32 cost = CacheModelLineCost(NDS, addr);
     if ((tags[way] & 3) == 3)
     {

@@ -437,6 +437,24 @@ public:
     // line, wake page); D masking applies only to the module's own memory (main RAM or its 0x0C mirror), never to
     // the game lines our code reads
     std::vector<std::pair<u32, u32>> WhatIfExempt;
+    // --evict-attr FILE: which module code evicted the game lines the game later misses (shadow says it would have hit):
+    // each module refill that pushes out a game line remembers the module PC; the game's re-miss charges its extra
+    // cycles to that PC. Written at exit: pc,kind(I/D),misses,cycles
+    bool EvictAttr = false;
+    std::unordered_map<u32, u32> EvictI, EvictD;
+    std::map<std::pair<u32, char>, std::pair<u64, s64>> EvictCharge;
+    void EvictNote(std::unordered_map<u32, u32>& m, u32 victim, u32 pc)
+    {
+        if (!(victim & 1)) return;
+        const u32 vl = victim & ~0x1Fu, a = 0x02000000 | (vl & 0x00FFFFFF);
+        if (((vl >> 24) == 0x02 || (vl >> 24) == 0x0C) && ProfInModule(a)) return;   // our own line
+        m[vl] = pc;
+    }
+    void EvictCharge1(std::unordered_map<u32, u32>& m, u32 line, char k, s64 d)
+    {
+        auto it = m.find(line); if (it == m.end()) return;
+        auto& c = EvictCharge[{ it->second, k }]; c.first++; c.second += d; m.erase(it);
+    }
     u32 WhatIfIBase = 0, WhatIfDBase = 0;   // --whatif-module-ibase/-dbase: the confined sets are (set & mask) | base
     bool WhatIfMaskable(u32 addr) const
     {
