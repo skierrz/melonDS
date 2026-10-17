@@ -433,6 +433,18 @@ public:
     // what-if (timing study only): module code fetches / module data accesses use only the cache
     // sets in this mask (0: all), as if the module's hot code/data were laid out in those sets
     u32 WhatIfISets = 0, WhatIfDSets = 0;
+    // --whatif-exempt LO:HI (repeatable): module addresses that keep their own sets (the tuned wake block, pointer
+    // line, wake page); D masking applies only to the module's own memory (main RAM or its 0x0C mirror), never to
+    // the game lines our code reads
+    std::vector<std::pair<u32, u32>> WhatIfExempt;
+    bool WhatIfMaskable(u32 addr) const
+    {
+        if ((addr >> 24) != 0x02 && (addr >> 24) != 0x0C) return false;
+        const u32 a = 0x02000000 | (addr & 0x00FFFFFF);
+        if (!ProfInModule(a)) return false;
+        for (auto [lo, hi] : WhatIfExempt) if (a >= lo && a < hi) return false;
+        return true;
+    }
     u32 ProfCurPC = 0;
     struct ProfGamePC { s64 IExtra, DExtra; u64 PollI, PollD; };
     std::map<u32, ProfGamePC>* ProfGamePCs = nullptr;
