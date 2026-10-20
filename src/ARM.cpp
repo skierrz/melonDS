@@ -1039,14 +1039,16 @@ void ARMv5::ProfileInstr(u32 addr, u32 cpsr)
         if ((NDS.IME[0] & 1) && (NDS.IE[0] & NDS.IF[0]))
         {
             Prof.MaskedPend += c;
+            if (!ProfMaskRun) ProfMaskStart = addr;
+            ProfMaskLast = addr;
             ProfMaskRun += c;
             if (ProfMaskRun > Prof.MaskedPendMax) Prof.MaskedPendMax = ProfMaskRun;
         }
         else
-            ProfMaskRun = 0;
+            HoldoffEnd();
     }
     else
-        ProfMaskRun = 0;
+        HoldoffEnd();
     if (in)
     {
         if (vbl) Prof.VBlank += c;

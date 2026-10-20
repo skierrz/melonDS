@@ -441,6 +441,22 @@ public:
     // each module refill that pushes out a game line remembers the module PC; the game's re-miss charges its extra
     // cycles to that PC. Written at exit: pc,kind(I/D),misses,cycles
     bool EvictAttr = false;
+    // footprint lab: --holdoff-attr: each wait of a pending game IRQ under our CPSR.I mask of >= HoldoffMin cycles,
+    // by (PC where the wait began, last PC of ours before it ended): count, longest
+    bool HoldoffAttr = false;
+    u64 HoldoffMin = 2000;
+    u32 ProfMaskStart = 0, ProfMaskLast = 0;
+    std::map<std::pair<u32, u32>, std::pair<u64, u64>> Holdoffs;
+    void HoldoffEnd()
+    {
+        if (HoldoffAttr && ProfMaskRun >= HoldoffMin)
+        {
+            auto& e = Holdoffs[{ProfMaskStart, ProfMaskLast}];
+            e.first++;
+            if (ProfMaskRun > e.second) e.second = ProfMaskRun;
+        }
+        ProfMaskRun = 0;
+    }
     std::unordered_map<u32, u32> EvictI, EvictD;
     std::map<std::pair<u32, char>, std::pair<u64, s64>> EvictCharge;
     void EvictNote(std::unordered_map<u32, u32>& m, u32 victim, u32 pc)

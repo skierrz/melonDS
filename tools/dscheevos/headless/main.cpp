@@ -323,6 +323,7 @@ static void on_vblank(ARMv5& cpu)
 }
 
 static std::string evict_path;   // footprint lab: --evict-attr
+static std::string holdoff_path; // footprint lab: --holdoff-attr
 static void report(NDS& nds)
 {
     if (!hist9path.empty())
@@ -396,6 +397,16 @@ static void report(NDS& nds)
     if (nds.ARM9.IRQUnlocks)
         std::fprintf(stderr, "[game] lockdown: IRQ unlocks %llu, relocked when our code ran again %llu (unused %llu)\n",
                      (unsigned long long)nds.ARM9.IRQUnlocks, (unsigned long long)nds.ARM9.Relocks, (unsigned long long)nds.ARM9.LockDiscards);
+    if (nds.ARM9.HoldoffAttr && !holdoff_path.empty())
+    {
+        if (FILE* f = std::fopen(holdoff_path.c_str(), "w"))
+        {
+            std::fprintf(f, "start,last,count,max,intervals\n");
+            for (auto& [k, v] : nds.ARM9.Holdoffs)
+                std::fprintf(f, "%08x,%08x,%llu,%llu,%u\n", k.first, k.second, (unsigned long long)v.first, (unsigned long long)v.second, (unsigned)n);
+            std::fclose(f);
+        }
+    }
     if (nds.ARM9.EvictAttr && !evict_path.empty())
     {
         if (FILE* f = std::fopen(evict_path.c_str(), "w"))
@@ -715,7 +726,7 @@ int main(int argc, char** argv)
     long tracepc = -1, sdtracefrom = -1;
     bool traceled = false;
     bool profile = false, scriptfromgame = false, thumbcycle = false;
-    u32 whatifi = 0, whatifd = 0; std::vector<std::pair<u32, u32>> whatifex; u32 whatifib = 0, whatifdb = 0; std::string evictpath;
+    u32 whatifi = 0, whatifd = 0; std::vector<std::pair<u32, u32>> whatifex; u32 whatifib = 0, whatifdb = 0; std::string evictpath, holdoffpath;
     std::string proflog, watch;
     std::vector<std::pair<u32, u32>> acc9;                 // gsdd lab: --access9 LO:SIZE
     std::vector<std::pair<long, std::string>> saveat;      // gsdd lab: --save-state-at FRAME:FILE (+ FILE.meta)
@@ -789,6 +800,7 @@ int main(int argc, char** argv)
         else if (a == "--whatif-module-ibase") whatifib = std::stoul(next(), nullptr, 0);
         else if (a == "--whatif-module-dbase") whatifdb = std::stoul(next(), nullptr, 0);
         else if (a == "--evict-attr") evictpath = next();   // footprint lab
+        else if (a == "--holdoff-attr") holdoffpath = next();   // footprint lab: where our masked code holds off game IRQs
         else if (a == "--whatif-exempt") { std::string v = next(); unsigned lo = 0, hi = 0; if (std::sscanf(v.c_str(), "%x:%x", &lo, &hi) != 2) usage(); whatifex.push_back({lo, hi}); }
         else if (a == "--profile-arm7") { prof::arm7 = true; prof::arm7path = next(); }
         else if (a == "--profile-arm7-range") { std::string v = next(); size_t c = v.find(':'); prof::arm7 = true;
@@ -1015,7 +1027,7 @@ int main(int argc, char** argv)
         nds->ARM9Write32(0x02FFFE78, (u32)cmdline.size());  // length
     }
     nds->ARM9.CacheModel = cachemodel;
-    nds->ARM9.WhatIfISets = whatifi; nds->ARM9.WhatIfDSets = whatifd; nds->ARM9.WhatIfExempt = whatifex; nds->ARM9.WhatIfIBase = whatifib; nds->ARM9.WhatIfDBase = whatifdb; nds->ARM9.EvictAttr = !evictpath.empty(); prof::evict_path = evictpath;
+    nds->ARM9.WhatIfISets = whatifi; nds->ARM9.WhatIfDSets = whatifd; nds->ARM9.WhatIfExempt = whatifex; nds->ARM9.WhatIfIBase = whatifib; nds->ARM9.WhatIfDBase = whatifdb; nds->ARM9.EvictAttr = !evictpath.empty(); prof::evict_path = evictpath; nds->ARM9.HoldoffAttr = !holdoffpath.empty(); prof::holdoff_path = holdoffpath;
     if (thumbcycle)
         nds->ARM9.ThumbOddCycle = 1;
     if (profile)
