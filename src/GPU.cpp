@@ -19,6 +19,7 @@
 #include <string.h>
 #include "NDS.h"
 #include "GPU.h"
+#include <cstdlib>
 
 #include "ARMJIT.h"
 
@@ -1256,6 +1257,12 @@ void GPU::StartScanline(u32 line) noexcept
     else if (VCount == 194)
         NDS.StopDMAs(0, 0x03);
 
+    // LAB (strip-lab, env MELONDS_FIFO_PER_LINE=1): decide per line whether the display FIFO runs,
+    // not only at line 0, so a main-memory display strip switched on mid-frame gets its pixels.
+    // Whether the DSi does this is display-lab tests H10/D1/D1c; this is not a claim about hardware.
+    static const bool fifo_per_line = getenv("MELONDS_FIFO_PER_LINE") != nullptr;
+    if (fifo_per_line && VCount < 192 && !RunFIFO)
+        RunFIFO = UsesDisplayFIFO() || NDS.DMAsInMode(0, 0x04);
     if ((VCount < 192) && RunFIFO)
         NDS.ScheduleEvent(Event_DisplayFIFO, false, 32, 0, 0);
 
